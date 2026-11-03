@@ -7,7 +7,10 @@ import { ws } from '../api/ws'
 import type { Bar, DrawingRecord, Interval, SymbolInfo } from '../lib/types'
 import { toolStyle, useStore } from '../state/store'
 import { PERIOD, intervalOf } from './periods'
-import { buildStyles } from './theme'
+import { ALERT_FEATURE_ID, buildStyles } from './theme'
+import { alertMarkets, openAlertAt } from '../state/alerts'
+import { fmtPrice } from '../components/ui'
+import { Bell } from 'lucide-react'
 import { registerCustomOverlays } from './overlays'
 import { fibDefaults } from './overlays/fib'
 import { POSITION_TOOLS, completePosition, positionDefaults } from './overlays/position'
@@ -75,7 +78,7 @@ export function ChartView() {
     const chart = init(el, {
       locale: 'en-US',
       timezone: st.timezone,
-      styles: buildStyles(st.theme, st.settings, st.chartType),
+      styles: buildStyles(st.theme, st.settings, st.chartType, !!st.symbol && alertMarkets().includes(st.symbol.market)),
       layout: { pane: { minHeight: 60 }, barSpaceLimit: { min: 1.5, max: 60 } },
     })
     if (!chart) return
@@ -87,6 +90,14 @@ export function ChartView() {
     chartHolder.suppressRemove = () => { suppressRemove.current = true }
     chartHolder.restoreRemove = () => { suppressRemove.current = false }
     chartHolder.undo = () => undo(chart)
+
+    // bell next to the crosshair price label (mouse hover, or a tap on a phone): alert at that price
+    chart.subscribeAction('onCrosshairFeatureClick', (data) => {
+      const d = data as { crosshair?: { y?: number; paneId?: string }; feature?: { id?: string } } | undefined
+      if (d?.feature?.id !== ALERT_FEATURE_ID || d.crosshair?.y == null) return
+      const price = priceAt(chart, d.crosshair.paneId ?? 'candle_pane', d.crosshair.y)
+      if (price != null) openAlertAt(price)
+    })
 
     chart.setDataLoader({
       async getBars({ type, timestamp, symbol: sym, period, callback }) {
@@ -201,9 +212,37 @@ export function ChartView() {
   }, [interval, symbol])
 
   // ------------------------------------------------------------------ styles
+  const alertButton = !!symbol && alertMarkets().includes(symbol.market)
   useEffect(() => {
-    chartRef.current?.setStyles(buildStyles(theme, settings, chartType))
-  }, [theme, settings, chartType])
+    chartRef.current?.setStyles(buildStyles(theme, settings, chartType, alertButton))
+  }, [theme, settings, chartType, alertButton])
+
+  // right click on the price chart (mouse only; phones use the crosshair bell): "Add alert at <price>"
+  const [menu, setMenu] = useState<{ x: number; y: number; price: number } | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const onContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    const chart = chartRef.current
+    if (!chart || !alertButton || !window.matchMedia('(pointer: fine)').matches) return
+    const box = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - box.left
+    const y = e.clientY - box.top
+    const pane = chart.getSize('candle_pane')
+    if (!pane || y < pane.top || y > pane.top + pane.height) return   // indicator panes: the browser menu
+    const price = priceAt(chart, 'candle_pane', y - pane.top)
+    if (price == null) return
+    e.preventDefault()
+    setMenu({ x: Math.max(4, Math.min(x, box.width - 230)), y: Math.max(4, Math.min(y, box.height - 52)), price })
+  }
+  useEffect(() => {
+    if (!menu) return
+    const close = (e: Event) => { if (!(e.target instanceof Node && menuRef.current?.contains(e.target))) setMenu(null) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null) }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('wheel', close, { passive: true })
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('wheel', close); document.removeEventListener('keydown', onKey) }
+  }, [menu])
+  useEffect(() => setMenu(null), [symbol, interval])
 
   useEffect(() => {
     chartRef.current?.setTimezone(timezone)
@@ -389,8 +428,15 @@ export function ChartView() {
   }
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" onContextMenu={onContextMenu}>
       <div ref={ref} className="h-full w-full" />
+      {menu && (
+        <div ref={menuRef} className="absolute z-40 min-w-[220px] rounded-lg border border-line bg-panel p-1 shadow-xl" style={{ left: menu.x, top: menu.y }}>
+          <button className="tb-btn w-full !h-9 !justify-start text-[13px]" onClick={() => { openAlertAt(menu.price); setMenu(null) }}>
+            <Bell />{t('Add alert at {price}', { price: fmtPrice(menu.price, symbol?.price_precision) })}
+          </button>
+        </div>
+      )}
       {loading && (
         // previous symbol's candles stay in the canvas until the new ones arrive: cover them
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center" style={{ background: 'color-mix(in srgb, var(--bg) 82%, transparent)' }}>
@@ -435,4 +481,12 @@ export const chartHolder: { chart: Chart | null; suppressRemove: () => void; res
   suppressRemove: () => {},
   restoreRemove: () => {},
   undo: () => {},
+}
+
+
+/** Price at a y pixel of a pane (pane coordinates). */
+function priceAt(chart: Chart, paneId: string, y: number): number | null {
+  const pts = chart.convertFromPixel([{ y }], { paneId }) as Array<{ value?: number }>
+  const v = pts[0]?.value
+  return v != null && Number.isFinite(v) && v > 0 ? v : null
 }

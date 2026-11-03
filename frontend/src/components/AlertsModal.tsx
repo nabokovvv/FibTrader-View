@@ -19,7 +19,13 @@ export function AlertsModal({ onClose }: { onClose: () => void }) {
   const [err, setErr] = useState<string | null>(null)
   const supported = !!symbol && alertMarkets().includes(symbol.market)
   const price = quote?.p ?? lastBar?.close
-  const [level, setLevel] = useState(() => (draft?.level ?? price ?? '').toString())
+  // a price picked on the chart (crosshair bell / right-click) wins over the current price; it is used once
+  const [level, setLevel] = useState(() => {
+    const preset = useAlerts.getState().preset
+    if (!draft && preset != null) return preset.toFixed(Math.max(0, Math.min(symbol?.price_precision ?? 2, 10)))
+    return (draft?.level ?? price ?? '').toString()
+  })
+  useEffect(() => { useAlerts.setState({ preset: null }) }, [])
   const [cond, setCond] = useState<AlertCond>('cross')
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)

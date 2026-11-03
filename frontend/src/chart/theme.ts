@@ -34,7 +34,13 @@ const LIGHT: Tone = {
   separator: '#d9d5cc', separatorActive: 'rgba(31,35,40,.08)', overlay: '#1f2328',
 }
 
-export function buildStyles(theme: Theme, settings: Settings, chartType: ChartType): DeepPartial<Styles> {
+/** Crosshair button next to the price label (like TradingView's "+"): click / tap = alert at that price. */
+export const ALERT_FEATURE_ID = 'alert-here'
+const TOUCH = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches
+// a small bell in a 14 x 14 box, absolute commands only (KLineChart draws feature paths unscaled)
+const BELL_PATH = 'M 3.5 10 L 3.5 6.6 Q 3.5 2.6 7 2.6 Q 10.5 2.6 10.5 6.6 L 10.5 10 M 2 10.4 L 12 10.4 M 5.8 12.2 Q 7 13.6 8.2 12.2 M 7 1.2 L 7 2.6'
+
+export function buildStyles(theme: Theme, settings: Settings, chartType: ChartType, alertButton = false): DeepPartial<Styles> {
   const t = theme === 'dark' ? DARK : LIGHT
   const up = settings.upColor
   const down = settings.downColor
@@ -127,7 +133,14 @@ export function buildStyles(theme: Theme, settings: Settings, chartType: ChartTy
         show: true,
         line: { show: true, style: 'dashed', dashedValue: [4, 2], size: 1, color: t.crosshair },
         text: { show: true, style: 'fill', color: t.crossText, size: 11, family: FONT, weight: 'normal', borderStyle: 'solid', borderDashedValue: [2, 2], borderSize: 1, borderColor: t.crossBg, borderRadius: 2, paddingLeft: 4, paddingRight: 4, paddingTop: 3, paddingBottom: 3, backgroundColor: t.crossBg },
-        features: [],
+        features: alertButton ? [{
+          // a finger needs a bigger target than a mouse: 26 px box on touch screens (the 14 px bell stays centred)
+          id: ALERT_FEATURE_ID, position: 'right', type: 'path', size: TOUCH ? 26 : 18,
+          paddingLeft: TOUCH ? 6 : 2, paddingTop: TOUCH ? 6 : 2, paddingRight: TOUCH ? 6 : 2, paddingBottom: TOUCH ? 6 : 2,
+          marginLeft: 0, marginTop: 0, marginRight: 2, marginBottom: 0,
+          color: t.crossText, activeColor: '#ffffff', backgroundColor: t.crossBg, activeBackgroundColor: '#ff7a59', borderRadius: 3,
+          content: { path: BELL_PATH, style: 'stroke', lineWidth: 1.3 },
+        }] : [],
       },
       vertical: {
         show: true,

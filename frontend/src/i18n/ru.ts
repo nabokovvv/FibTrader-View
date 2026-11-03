@@ -57,6 +57,7 @@ export const RU: Record<string, string> = {
   'closed': 'нет связи',
   'Toggle theme': 'Сменить тему',
   'Light theme': 'Светлая тема',
+  'Add alert at {price}': 'Алерт на {price}',
   'Dark theme': 'Тёмная тема',
   'More': 'Ещё',
   'Account': 'Аккаунт',

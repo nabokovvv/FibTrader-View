@@ -14,6 +14,7 @@ interface AlertsState {
   telegram: boolean
   loaded: boolean
   draft: AlertDraft | null
+  preset: number | null      // price picked on the chart (crosshair bell / right-click), used once by the form
   load: () => Promise<void>
   setDraft: (d: AlertDraft | null) => void
 }
@@ -23,12 +24,20 @@ export const useAlerts = create<AlertsState>((set) => ({
   telegram: false,
   loaded: false,
   draft: null,
+  preset: null,
   load: async () => {
     const r = await api.alerts()
     set({ alerts: r.alerts, telegram: r.telegram, loaded: true })
   },
   setDraft: (d) => set({ draft: d }),
 }))
+
+/** Open the alert form for the current symbol with `price` filled in. */
+export function openAlertAt(price: number) {
+  if (!Number.isFinite(price) || price <= 0) return
+  useAlerts.setState({ draft: null, preset: price })
+  useStore.getState().setSheet('alerts')
+}
 
 /** Markets with alerts on this server (empty = feature off). */
 export const alertMarkets = () => serverFeatures().alerts
