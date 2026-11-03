@@ -41,6 +41,15 @@ export function TopBar({ compact }: { compact: boolean }) {
   const dirUp = lastBar ? lastBar.close >= lastBar.open : true
   const ChartIcon = CHART_TYPES.find((c) => c.type === chartType)?.Icon ?? ChartLine
 
+  // browser tab title like TradingView: "CAKEUSDT 1.869 ▲" (arrow = 24 h change, else the current bar)
+  const titleUp = quote?.ch != null ? quote.ch >= 0 : dirUp
+  useEffect(() => {
+    document.title = symbol && price !== undefined
+      ? `${tickerOf(symbol)} ${fmtPrice(price, symbol.price_precision)} ${titleUp ? '▲' : '▼'}`
+      : 'FibTrader View'
+  }, [symbol, price, titleUp])
+  useEffect(() => () => { document.title = 'FibTrader View' }, [])
+
   return (
     // height includes the status-bar inset (when the app is drawn under it), so the 44 px row never shrinks
     <header className="flex shrink-0 items-center gap-1 border-b border-line bg-panel px-2" style={{ height: 'calc(44px + var(--safe-top))', paddingTop: 'var(--safe-top)' }}>
