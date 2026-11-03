@@ -72,10 +72,11 @@ class HyperliquidProvider:
     # ------------------------------------------------------------------ http
     async def post(self, body: dict, cost: float, background: bool = False) -> object:
         bucket = limits.hl_bucket(background)
-        for attempt in range(4):
-            await bucket.acquire(timeout=3600 if background else 10, cost=cost)  # charts give up fast (503)
+        attempts = 4 if background else 2       # a chart request does not keep a failing upstream busy
+        for attempt in range(attempts):
             try:
-                async with limits.hl_semaphore():
+                async with limits.hl_semaphore(background):
+                    await bucket.acquire(timeout=3600 if background else 10, cost=cost)  # charts give up fast (503)
                     r = await self._client.post(API, json=body)
                 if r.status_code == 429:
                     limits.hl_bucket(False).drain()  # the whole IP is over the limit: everybody waits a bit
@@ -87,7 +88,7 @@ class HyperliquidProvider:
                     raise RuntimeError(f"hyperliquid {body.get('type')}: HTTP {r.status_code} {r.text[:120]}")
                 return r.json()
             except (httpx.HTTPError, ValueError) as exc:
-                if attempt == 3:
+                if attempt == attempts - 1:
                     raise
                 log.debug("hyperliquid retry %s: %s", body.get("type"), exc)
                 await asyncio.sleep(1.0 * 2 ** attempt)
@@ -207,6 +208,11 @@ class HyperliquidProvider:
         now = int(time.time() * 1000)
         return (now - (WINDOW - 10) * ivms) // ivms * ivms
 
+    def window_start(self, interval: str) -> int:
+        """Open time of the oldest bar Hyperliquid still serves (anything older is gone for good)."""
+        ivms = INTERVALS[interval].ms
+        return (int(time.time() * 1000) - WINDOW * ivms) // ivms * ivms
+
     async def fetch_bars(self, symbol: str, interval: str, start_ms: int, end_ms: int) -> list[Bar]:
         return await self.fetch_candles(symbol, interval, start_ms, end_ms)
 
@@ -237,7 +243,13 @@ class HyperliquidProvider:
         dexes = sorted({split(c)[0] for c in coins}) if coins is not None else self.dexes()
         out: dict[str, float] = {}
         for dex in dexes:
-            res = await self.post({"type": "allMids", **({"dex": dex} if dex else {})}, 2, background)
+            try:
+                res = await self.post({"type": "allMids", **({"dex": dex} if dex else {})}, 2, background)
+            except limits.Busy:
+                raise
+            except Exception as exc:  # noqa: BLE001 — one exchange failing must not hide the others
+                log.info("hyperliquid mids %s: %s", dex or "main", exc)
+                continue
             for k, v in (res or {}).items():
                 p = _f(v)
                 if p is not None and (dex or not k.startswith("@")):  # "@123" = spot pairs on the main exchange

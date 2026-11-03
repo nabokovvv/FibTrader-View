@@ -241,11 +241,13 @@ def bybit_bucket() -> AsyncBucket:
 
 # Hyperliquid limits REST by weight per IP: 1200 per minute (candles cost 20 + 1 per 60 bars, allMids 2, most other
 # info requests 20). Charts, quotes and alerts share one budget; the archive, the OI recorder and catalogue refreshes
-# have their own, smaller one. Worst minute: 300 + 9*60 + 60 + 3.5*60 = 1110 < 1200.
+# have their own, smaller one. Both bursts hold a full 5000-bar request (weight 104) so its cost is never clamped.
+# Worst minute: 300 + 9*60 + 110 + 3.5*60 = 1160 < 1200. Tokens are taken right before sending (inside the
+# semaphore), so waiting for a free connection cannot bunch requests up.
 HL_RATE, HL_BURST = 9.0, 300.0
-HL_BG_RATE, HL_BG_BURST = 3.5, 60.0
+HL_BG_RATE, HL_BG_BURST = 3.5, 110.0
 _hl: dict[str, AsyncBucket] = {}
-_hl_sem: asyncio.Semaphore | None = None
+_hl_sem: dict[str, asyncio.Semaphore] = {}
 
 
 def hl_bucket(background: bool = False) -> AsyncBucket:
@@ -256,11 +258,14 @@ def hl_bucket(background: bool = False) -> AsyncBucket:
     return b
 
 
-def hl_semaphore() -> asyncio.Semaphore:
-    global _hl_sem
-    if _hl_sem is None:
-        _hl_sem = asyncio.Semaphore(3)
-    return _hl_sem
+def hl_semaphore(background: bool = False) -> asyncio.Semaphore:
+    """Requests in flight: 3 for charts, 1 for background jobs (a background request waiting for its budget holds
+    only its own slot)."""
+    key = "bg" if background else "fg"
+    s = _hl_sem.get(key)
+    if s is None:
+        s = _hl_sem[key] = asyncio.Semaphore(1 if background else 3)
+    return s
 
 
 def public_limits() -> dict:

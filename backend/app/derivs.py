@@ -118,15 +118,20 @@ CREATE TABLE IF NOT EXISTS hl_oi(symbol TEXT NOT NULL, ts INTEGER NOT NULL, oi R
             r = self._conn.execute("SELECT MIN(ts) FROM hl_oi WHERE symbol=?", (symbol,)).fetchone()
         return r[0] if r else None
 
-    def prune(self, unused_days: int = 60) -> dict:
-        """Liquidations older than 30 days; cached pages nobody opened for `unused_days`; 15-minute Hyperliquid OI
-        points older than 30 days (the hourly ones stay)."""
-        now = time.time()
+    def prune(self, unused_days: int = 60, now: float | None = None) -> dict:
+        """Liquidations older than 30 days; cached pages nobody opened for `unused_days`; Hyperliquid OI older than
+        30 days thinned to the LAST point of each hour (what the hourly panel shows; a missed :00 poll loses nothing).
+        Only the week before the cut is thinned per run — older weeks were done by earlier runs."""
+        now = now or time.time()
+        cut = int((now - HL_OI_FINE_DAYS * 86400) * 1000) // HOUR * HOUR
+        lo = cut - 7 * DAY
         with self._lock:
             liq = self._conn.execute("DELETE FROM liq WHERE ts<?", (int((now - LIQ_KEEP_DAYS * 86400) * 1000),)).rowcount
             pages = self._conn.execute("DELETE FROM pages WHERE accessed<?", (int(now - unused_days * 86400),)).rowcount
-            oi = self._conn.execute("DELETE FROM hl_oi WHERE ts<? AND ts % ? != 0",
-                                    (int((now - HL_OI_FINE_DAYS * 86400) * 1000), HOUR)).rowcount
+            oi = self._conn.execute(
+                "DELETE FROM hl_oi WHERE ts>=? AND ts<? AND (symbol, ts) NOT IN ("
+                " SELECT symbol, MAX(ts) FROM hl_oi WHERE ts>=? AND ts<? GROUP BY symbol, ts / ?)",
+                (lo, cut, lo, cut, HOUR)).rowcount
         return {"liq_rows": liq, "pages": pages, "hl_oi_rows": oi}
 
 
@@ -333,7 +338,13 @@ class HLOIRecorder:
         ts = (now_ms or int(time.time() * 1000)) // HL_OI_EVERY_MS * HL_OI_EVERY_MS
         rows: list[tuple[str, int, float]] = []
         for dex in hl.dexes():
-            ctxs = await hl.contexts(dex, 0, background=True)
+            try:
+                ctxs = await hl.contexts(dex, 0, background=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — keep what the other exchanges gave
+                log.info("hyperliquid OI %s: %s", dex or "main", exc)
+                continue
             for coin, c in ctxs.items():
                 info = hl._all.get(coin)
                 if info is None or info.extra.get("delisted"):
@@ -375,7 +386,7 @@ def _release(ip: str) -> None:
         _running.release()
 
 
-def _derivs(request: Request, id: str) -> tuple[Derivs, str, str]:
+async def _derivs(request: Request, id: str) -> tuple[Derivs, str, str]:
     d: Derivs | None = getattr(request.app.state, "derivs", None)
     market, _, sym = id.partition(":")
     ok = d is not None and sym and ((market == "bybit" and d.provider is not None) or (market == "hl" and d.hl is not None))
@@ -384,7 +395,11 @@ def _derivs(request: Request, id: str) -> tuple[Derivs, str, str]:
     ip = request.scope.get("state", {}).get("client_ip", "unknown")
     if not _rate.allow(ip):
         raise HTTPException(429, "too many requests, slow down")
-    return d, market, sym
+    # only instruments from the catalogue reach the upstream (no network lookup for unknown ids)
+    info = await request.app.state.symbols.get(id)
+    if info is None or info.id != id:
+        raise HTTPException(404, "unknown symbol")
+    return d, market, info.symbol
 
 
 def _range(start: int, end: int) -> None:
@@ -398,7 +413,7 @@ async def derivs(request: Request, kind: str, id: str = Query(..., max_length=64
     if interval not in INTERVALS:
         raise HTTPException(400, "unknown interval")
     _range(start, end)
-    d, market, sym = _derivs(request, id)
+    d, market, sym = await _derivs(request, id)
     if kind not in ("oi", "funding", "liq"):
         raise HTTPException(404)
     ip = request.scope.get("state", {}).get("client_ip", "unknown")

@@ -3,8 +3,10 @@
 #   latest/app.sqlite.zst          user data (drawings, watchlists, layouts, alerts, shared links)
 #   latest/derivs.sqlite.zst       recorded liquidations and Hyperliquid open interest
 #   latest/hl-archive.sqlite.zst   Hyperliquid 1h / 4h / 1D bars older than the API's 5000-bar window
-# Each copy is a consistent online snapshot (sqlite3 .backup) and must pass PRAGMA quick_check before it replaces
-# the copy in R2 — a damaged database never overwrites a good backup. Nothing else is kept in the bucket.
+# A snapshot (sqlite3 .backup) replaces the copy in R2 only if it passes PRAGMA quick_check AND did not shrink:
+# next to each copy R2 keeps <name>.metric — a count that only grows in normal use (archived bars, recorded OI hours,
+# users). A smaller count means the file was lost and recreated (or damaged): the good copy stays, an alert goes out.
+# After checking what happened, `sudo FV_BACKUP_FORCE=1 fv-backup-r2` accepts the smaller database.
 # Credentials: /etc/fibtrader/r2.env (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET).
 # Restore: rclone copy r2:$R2_BUCKET/latest/<name>.sqlite.zst . && zstd -d <name>.sqlite.zst, stop fibtrader-view,
 # put it in place (app.sqlite in data/, the others in data/candles/), start fibtrader-view.
@@ -15,20 +17,43 @@ export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare RCLONE_CONF
   RCLONE_CONFIG_R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
   RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 fail() { fv-alert "backup failed" "$1"; exit 1; }
-DATA=/home/ubuntu/fibtrader-view/data
+DATA="${FV_DATA:-/home/ubuntu/fibtrader-view/data}"   # FV_DATA: tests only
+FORCE="${FV_BACKUP_FORCE:-0}"
+
+# what must not shrink between two backups (bars are never pruned; OI keeps one point per hour; users stay)
+metric() {
+  case "$1" in
+    app) sqlite3 "$2" "SELECT COUNT(DISTINCT user_id) FROM watchlists;" ;;
+    derivs) sqlite3 "$2" "SELECT COUNT(*) FROM (SELECT DISTINCT symbol, ts / 3600000 FROM hl_oi);" ;;
+    hl-archive) sqlite3 "$2" "SELECT COUNT(*) FROM bars;" ;;
+  esac
+}
+
 tmp=$(mktemp -d /var/tmp/fv-backup.XXXXXX); trap 'rm -rf "$tmp"' EXIT
-sent=()
+sent=(); kept=()
 for spec in "app:$DATA/app.sqlite" "derivs:$DATA/candles/derivs.sqlite" "hl-archive:$DATA/candles/hl-archive.sqlite"; do
   name=${spec%%:*}; src=${spec#*:}
   [ -f "$src" ] || continue
   snap="$tmp/$name.sqlite"
   sqlite3 "$src" ".backup '$snap'" || fail "snapshot of $name failed (the previous copy in R2 was kept)"
   [ "$(sqlite3 "$snap" 'PRAGMA quick_check;')" = "ok" ] || fail "$name looks damaged: the previous copy in R2 was kept"
+  now=$(metric "$name" "$snap") || fail "cannot read $name (the previous copy in R2 was kept)"
+  prev=$(rclone cat "r2:$R2_BUCKET/latest/$name.metric" 2>/dev/null | tr -dc 0-9 || true)
+  if [ -n "$prev" ] && [ "$FORCE" != 1 ] && [ "${now:-0}" -lt "$prev" ]; then
+    kept+=("$name ($prev -> $now)")
+    rm -f "$snap"
+    continue
+  fi
   zstd -q -10 --rm "$snap" -o "$snap.zst" || fail "compressing $name failed"
   rclone copyto "$snap.zst" "r2:$R2_BUCKET/latest/$name.sqlite.zst" || fail "upload of $name to R2 failed"
+  printf '%s\n' "$now" > "$tmp/$name.metric"
+  rclone copyto "$tmp/$name.metric" "r2:$R2_BUCKET/latest/$name.metric" || fail "upload of the $name metric failed"
   sent+=("$name=$(du -k "$snap.zst" | cut -f1)KB")
   rm -f "$snap.zst"
 done
-[ ${#sent[@]} -gt 0 ] || fail "no database found to back up"
 rclone delete "r2:$R2_BUCKET" --exclude "latest/**" || true   # only the latest copy is kept
-logger -t fv-backup "uploaded to R2: ${sent[*]}"
+[ ${#sent[@]} -gt 0 ] && logger -t fv-backup "uploaded to R2: ${sent[*]}"
+if [ ${#kept[@]} -gt 0 ]; then
+  fail "database shrank, R2 copy NOT replaced: ${kept[*]}. If the file was lost, restore it from R2 (see fv-backup-r2); if the drop is expected, run: sudo FV_BACKUP_FORCE=1 fv-backup-r2"
+fi
+[ ${#sent[@]} -gt 0 ] || fail "no database found to back up"

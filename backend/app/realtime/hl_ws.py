@@ -119,10 +119,12 @@ class HLStream:
                 async with websockets.connect(URL, ping_interval=None, max_size=4 * 1024 * 1024, open_timeout=15) as ws:
                     self._ws, self.connected = ws, True
                     backoff = 1.0
-                    self._pending.clear()
-                    for topic in list(self._topics):
-                        await self._budget.acquire(timeout=3600)  # a reconnect does not skip the budget
-                        await self._send(self._msg(topic, "subscribe"))
+                    # a fresh connection has no subscriptions: queue the wanted ones for the single sender, which
+                    # re-checks the wanted state after every budget wait (an unsubscribe meanwhile cancels it)
+                    self._pending = {t: "subscribe" for t in self._topics}
+                    self._wake.set()
+                    if self._sender is None or self._sender.done():
+                        self._sender = asyncio.create_task(self._send_loop(), name="hl-ws-cmd")
                     log.info("hyperliquid ws connected (%d topics)", len(self._topics))
                     pinger = asyncio.create_task(self._ping(ws))
                     try:

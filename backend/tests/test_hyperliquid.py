@@ -34,6 +34,8 @@ class FakeHL:
 
     def __init__(self):
         self.calls: list[dict] = []
+        self.dead_coins = {"km:US500", "OLD", "xyz:DXY"}   # delisted: no new candles
+        self.broken: set[str] = set()                      # exchanges answering with an error
         self.dexes = {
             "": ([_asset("BTC", 5), _asset("OLD", 1, True)], [_ctx(77000, 3e9), _ctx(1, 0)]),
             "xyz": ([_asset("xyz:TSLA", 3), _asset("xyz:NVDA", 3), _asset("xyz:GOLD", 4), _asset("xyz:DXY", 2, True)],
@@ -48,6 +50,8 @@ class FakeHL:
         t = body["type"]
         if t == "perpDexs":
             return httpx.Response(200, json=[None] + [{"name": d, "fullName": d.upper()} for d in self.dexes if d])
+        if t in ("metaAndAssetCtxs", "allMids") and body.get("dex", "") in self.broken:
+            return httpx.Response(422, text="broken exchange")
         if t == "metaAndAssetCtxs":
             assets, ctxs = self.dexes[body.get("dex", "")]
             return httpx.Response(200, json=[{"universe": assets}, ctxs])
@@ -56,6 +60,8 @@ class FakeHL:
             return httpx.Response(200, json={a["name"]: c["midPx"] for a, c in zip(assets, ctxs)} | {"@1": "1.0"})
         if t == "candleSnapshot":
             req = body["req"]
+            if req["coin"] in self.dead_coins:
+                return httpx.Response(200, json=[])
             ivms = {"1h": HOUR, "4h": 4 * HOUR, "1d": DAY, "1m": 60_000}[req["interval"]]
             newest = int(time.time() * 1000) // ivms * ivms
             oldest = newest - (WINDOW - 1) * ivms
@@ -255,11 +261,134 @@ async def test_open_interest_is_recorded_and_bucketed(tmp_path, hl):
     assert liq["unavailable"] == "source"
     fund = await _answer_hl(d, "funding", "xyz:TSLA", "1h", NOW - DAY, NOW)
     assert fund["points"] == [[NOW - 2 * HOUR, 0.0000125]]   # stamped on the hour
-    # 15-minute points go after 30 days, hourly ones stay
-    d.store.add_hl_oi([("xyz:TSLA", NOW - 40 * DAY + 15 * 60_000, 1.0), ("xyz:TSLA", NOW - 40 * DAY, 1.0)])
-    assert d.store.prune()["hl_oi_rows"] == 1
+    # after 30 days each hour keeps its LAST point — also when the :00 poll was missed
+    h1, h2 = NOW - 33 * DAY, NOW - 33 * DAY + HOUR
+    d.store.add_hl_oi([("xyz:TSLA", h1 + k * 15 * 60_000, 10.0 + k) for k in range(4)] +
+                      [("xyz:TSLA", h2 + k * 15 * 60_000, 20.0 + k) for k in range(1, 4)])
+    assert d.store.prune(now=NOW / 1000)["hl_oi_rows"] == 5
+    assert d.store.hl_oi("xyz:TSLA", h1, h2 + HOUR, HOUR) == [[h1, 13.0], [h2, 23.0]]
 
 
 def test_intervals_used_by_hyperliquid_exist():
     from app.markets.hyperliquid import IV
     assert set(IV) <= set(INTERVALS)
+
+
+# ------------------------------------------------------- Astra round 6 regressions
+async def test_chart_requests_never_narrow_archive_coverage(tmp_path, hl):
+    svc, stores = _service(tmp_path, hl)
+    store = stores.get("hl-archive")
+    ws = hl.window_start("1h")
+    old = [[ws - k * HOUR, 1, 2, 0.5, 1.5, 1] for k in range(1, 801)][::-1]   # 800 bars only the archive has
+    store.upsert("xyz:TSLA", "1h", old)
+    await HLArchiver(hl, svc).update("xyz:TSLA", "1h")
+    info = await hl.resolve("xyz:TSLA")
+    to, seen = None, 0
+    for _ in range(30):                                   # scroll back page by page, like the chart does
+        page = await svc.get_bars(info, "1h", to, 1000)
+        seen += len(page.bars)
+        if not page.more:
+            break
+        to = page.bars[0][0]
+    assert page.bars[0][0] == old[0][0] and not page.more
+    assert seen >= 800 + WINDOW - 5
+    cov = store.coverage("xyz:TSLA", "1h")
+    assert cov.first_ts == old[0][0] and cov.exhausted
+
+
+async def test_chart_first_bootstrap_keeps_the_whole_window(tmp_path, hl):
+    svc, stores = _service(tmp_path, hl)
+    info = await hl.resolve("xyz:NVDA")
+    to = None
+    for _ in range(30):
+        page = await svc.get_bars(info, "1h", to, 1000)
+        if not page.more:
+            break
+        to = page.bars[0][0]
+    store = stores.get("hl-archive")
+    cov = store.coverage("xyz:NVDA", "1h")
+    assert cov.exhausted and cov.first_ts <= hl.window_start("1h") + HOUR   # no safety-margin bars left behind
+    assert await HLArchiver(hl, svc).update("xyz:NVDA", "1h") is None       # the archive job sees it complete
+
+
+async def test_long_delisted_market_still_opens(tmp_path, hl):
+    svc, stores = _service(tmp_path, hl)
+    store = stores.get("hl-archive")
+    end = NOW - 130 * DAY
+    bars = [[end - k * HOUR, 1, 2, 0.5, 1.5, 1] for k in range(600)][::-1]
+    store.upsert("km:US500", "1h", bars)
+    store.set_coverage("km:US500", "1h", bars[0][0], bars[-1][0], True)
+    info = await hl.resolve("km:US500")
+    page = await svc.get_bars(info, "1h", None, 300)
+    assert len(page.bars) == 300 and page.bars[-1][0] == end and page.more
+
+
+async def test_unknown_ids_never_reach_the_upstream(tmp_path, hl):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from app.derivs import _derivs
+    d = Derivs(DerivStore(tmp_path / "derivs.sqlite"), None, hl)
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(derivs=d, symbols=SymbolRegistry({"hl": hl}))),
+                          scope={"state": {"client_ip": "198.51.100.7"}})
+    calls = len(hl.fake.calls)
+    with pytest.raises(HTTPException) as e:
+        await _derivs(req, "hl:xyz:NOPE")
+    assert e.value.status_code == 404
+    assert all(c["type"] != "fundingHistory" for c in hl.fake.calls[calls:])
+    assert (await _derivs(req, "hl:xyz:TSLA"))[2] == "xyz:TSLA"
+
+
+async def test_one_broken_exchange_does_not_hide_the_others(tmp_path, hl):
+    await hl.symbols()
+    hl.fake.broken.add("io")
+    mids = await hl.mids({"xyz:TSLA", "io:NVDA"})
+    assert "xyz:TSLA" in mids and "io:NVDA" not in mids
+    d = Derivs(DerivStore(tmp_path / "derivs.sqlite"), None, hl)
+    assert await HLOIRecorder(d).record(NOW) == 4          # main + xyz markets, io skipped
+
+
+def test_budgets_hold_a_full_request_and_stay_under_the_ip_limit():
+    full = candle_weight(WINDOW)
+    assert limits.HL_BURST >= full and limits.HL_BG_BURST >= full   # the cost of a request is never clamped
+    assert limits.HL_BURST + limits.HL_RATE * 60 + limits.HL_BG_BURST + limits.HL_BG_RATE * 60 < 1200
+
+
+async def test_reconnect_does_not_resubscribe_a_topic_dropped_meanwhile(monkeypatch):
+    import asyncio
+    from app.realtime import hl_ws
+    sent: list[dict] = []
+    gone = asyncio.Event()
+
+    class Conn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def send(self, m):
+            sent.append(json.loads(m))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await gone.wait()
+            raise StopAsyncIteration
+
+    monkeypatch.setattr(hl_ws.websockets, "connect", lambda *a, **k: Conn())
+
+    async def on_bar(*a):
+        pass
+    s = HLStream(on_bar)
+    s._budget = limits.AsyncBucket(5, 1)                  # one command now, the next after 0.2 s
+    s._topics = {"1h|BTC": 1, "1h|ETH": 1}
+    run = asyncio.create_task(s._run())
+    await asyncio.sleep(0.05)                             # connected; BTC sent, ETH waits for the budget
+    await s.unsubscribe("1h|ETH")                         # the last viewer leaves meanwhile
+    await asyncio.sleep(0.4)
+    subs = [m["subscription"]["coin"] for m in sent if m["method"] == "subscribe"]
+    assert subs == ["BTC"]
+    gone.set()
+    await s.stop()
+    run.cancel()

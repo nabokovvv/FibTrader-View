@@ -145,12 +145,23 @@ class CandleService:
             exhausted = cov is not None and cov.exhausted and start <= cov.first_ts
             if len(rows) >= limit or exhausted or span_i >= big:
                 break
+        if not rows:
+            # nothing in the look-back window, but older stored bars (a market delisted long ago): show the newest ones
+            first_ts, last_ts = await asyncio.to_thread(store.bounds, sym.symbol, native)
+            if last_ts is not None and last_ts <= end:
+                per = max(1, INTERVALS[interval].ms // INTERVALS[native].ms + 1)
+                rows = await asyncio.to_thread(store.read, sym.symbol, native, None, end, min(limit * per, 50_000))
+                if native != interval:
+                    rows = resample(rows, interval)
+                cov = await asyncio.to_thread(store.coverage, sym.symbol, native)
         if len(rows) > limit:
             rows = rows[-limit:]
 
         more = True
         if cov is not None and cov.exhausted:
             more = bool(rows) and rows[0][0] > cov.first_ts + INTERVALS[native].ms
+        elif cov is None and not rows:
+            more = False  # nothing stored and nothing to fetch (before the provider's history): stop scrolling
         return BarsPage(bars=rows, more=more, interval=interval, native=native)
 
     # ------------------------------------------------------------------ internals
@@ -192,6 +203,11 @@ class CandleService:
         lag = getattr(provider, "persist_lag_ms", 0)  # e.g. Alpaca: don't persist bars younger than the SIP lag
         if lag:
             boundary = min(boundary, bucket_start(now - lag, native))
+        if archive and self.can_persist(archive=True):  # its own rules: the provider window, coverage never narrowed
+            cap = self.backfill_bars
+            if cap is not None:
+                start = max(start, end - cap * INTERVALS[native].ms)
+            return await self._ensure_archive(provider, store, symbol, native, start, end, boundary)
         floor_ts = provider.history_floor(native)
         exhausted_by_floor = False
         if floor_ts is not None and start < floor_ts:
@@ -254,6 +270,57 @@ class CandleService:
                 if cached is None and fetch_end >= boundary:  # only a fetch that reached the live bucket
                     self._tail_put(provider.market, symbol, native, last, live)
             if (first, last, exhausted) != (cov.first_ts, cov.last_ts, cov.exhausted):
+                await asyncio.to_thread(store.set_coverage, symbol, native, first, last, exhausted)
+        return live
+
+    async def _ensure_archive(self, provider: Provider, store, symbol: str, native: str, start: int, end: int,
+                              boundary: int) -> list[Bar]:
+        """Archived intervals (bars that leave the provider's window for good, e.g. Hyperliquid 1h / 4h / 1D).
+
+        Coverage here is "everything stored" and a chart request never narrows or resets it (older bars that only the
+        archive still has must stay reachable). Only the provider's current window can be fetched; "exhausted" means
+        we hold everything back to where that window started — the archive job relies on that to skip its bootstrap.
+        """
+        now = now_ms()
+        oldest = provider.window_start(native)       # earliest bar the provider still serves
+        fetch_end = min(end, now)
+        live: list[Bar] = []
+
+        async def take(lo: int, hi: int) -> list[Bar]:
+            bars = await self._fetch(provider, symbol, native, lo, hi)
+            closed = [b for b in bars if b[0] < boundary]
+            if closed:
+                await asyncio.to_thread(store.upsert, symbol, native, closed)
+            return bars
+
+        async with self._lock(f"{provider.market}:{symbol}:{native}"):
+            cov = await asyncio.to_thread(store.coverage, symbol, native)
+            exhausted = cov.exhausted if cov is not None else False
+            if cov is None:
+                lo = max(start, oldest)
+                if fetch_end < lo:
+                    return []
+                bars = await take(lo, fetch_end)
+                live = [b for b in bars if b[0] >= boundary]
+                exhausted = lo <= oldest
+            else:
+                if start < cov.first_ts and not exhausted:
+                    lo = max(start, oldest)
+                    got = await take(lo, cov.first_ts - 1) if lo < cov.first_ts else []
+                    if lo <= oldest:
+                        exhausted = True          # fetched from where the provider's window starts
+                    elif not got:                 # nothing there (before the listing?): look at the rest of the window once
+                        await take(oldest, lo - 1)
+                        exhausted = True
+                if fetch_end > cov.last_ts:
+                    cached = self._tail_get(provider.market, symbol, native, cov.last_ts, fetch_end)
+                    newer = cached if cached is not None else await take(max(cov.last_ts, oldest), fetch_end)
+                    live = [b for b in newer if b[0] >= boundary]
+                    if cached is None and fetch_end >= boundary:
+                        last_closed = max([cov.last_ts] + [b[0] for b in newer if b[0] < boundary])
+                        self._tail_put(provider.market, symbol, native, last_closed, live)
+            first, last = await asyncio.to_thread(store.bounds, symbol, native)
+            if first is not None and (cov is None or (first, last, exhausted) != (cov.first_ts, cov.last_ts, cov.exhausted)):
                 await asyncio.to_thread(store.set_coverage, symbol, native, first, last, exhausted)
         return live
 
