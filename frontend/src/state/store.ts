@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { serverLimits } from '../auth/session'
 import { t } from '../i18n'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import type { WsStatus } from '../api/ws'
 import type { ChartType, IndicatorState, Interval, Quote, SymbolInfo, Watchlist } from '../lib/types'
 import { setFibDefaults, type FibConfig } from '../chart/overlays/fib'
@@ -130,15 +130,131 @@ function layoutState(s: AppState): LayoutState {
   }
 }
 
+/* ------------------------------------------------------------------------------------------------------------
+ * Account sync of the autosaved layout ('last') and the settings, for several devices / tabs of one account.
+ * A tab writes only the fields it changed on top of the server copy (read, merge, write), so changing the symbol on
+ * the laptop no longer overwrites the indicators added on the desktop. When a tab comes back to the front it pulls
+ * the account-wide fields (indicators, chart type, theme, time zone, settings); the symbol / interval / watchlist
+ * stay per tab (two tabs with different symbols must not flip each other) and come from 'last' on a page load.
+ * ---------------------------------------------------------------------------------------------------------- */
+type LayoutKey = keyof LayoutState
+const SHARED_LAYOUT = ['indicators', 'chartType', 'theme', 'timezone'] as const
+const dirtyLayout = new Set<LayoutKey>()
+const dirtySettings = new Set<keyof Settings>()
 let persistTimer: number | null = null
 let settingsTimer: number | null = null
-function schedulePersist(get: () => AppState) {
+let saveChain: Promise<unknown> = Promise.resolve()
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+const isMissing = (e: unknown) => e instanceof ApiError && e.status === 404
+
+function schedulePersist(...keys: LayoutKey[]) {
+  for (const k of keys) dirtyLayout.add(k)
   if (persistTimer) window.clearTimeout(persistTimer)
-  persistTimer = window.setTimeout(() => {
-    const s = get()
-    if (!s.ready || !s.symbol) return
-    api.putLayout('last', layoutState(s) as unknown as Record<string, unknown>).catch(() => { /* offline: ignore */ })
-  }, 600)
+  persistTimer = window.setTimeout(() => { persistTimer = null; void saveLast() }, 600)
+}
+
+function scheduleSettings(keys: Array<keyof Settings>) {
+  for (const k of keys) dirtySettings.add(k)
+  if (settingsTimer) window.clearTimeout(settingsTimer)
+  settingsTimer = window.setTimeout(() => { settingsTimer = null; void saveSettings() }, 300)
+}
+
+/** Queue the saves one after another (a slow request must not let an older state land last). */
+function chained(job: () => Promise<void>): Promise<unknown> {
+  saveChain = saveChain.then(job).catch(() => { /* offline: the dirty fields are kept for the next save */ })
+  return saveChain
+}
+
+function saveLast(): Promise<unknown> {
+  return chained(async () => {
+    const s = useStore.getState()
+    if (!s.ready || !s.symbol || !dirtyLayout.size) return
+    const keys = [...dirtyLayout]
+    dirtyLayout.clear()
+    try {
+      let server: Partial<LayoutState> = {}
+      try { server = (await api.layout('last')).state as Partial<LayoutState> } catch (e) { if (!isMissing(e)) throw e }
+      const mine = layoutState(s)
+      const next = { ...mine, ...server } as LayoutState
+      for (const k of keys) (next as unknown as Record<string, unknown>)[k] = mine[k]
+      await api.putLayout('last', next as unknown as Record<string, unknown>)
+      applyShared(next)
+    } catch (e) {
+      for (const k of keys) dirtyLayout.add(k)
+      throw e
+    }
+  })
+}
+
+function saveSettings(): Promise<unknown> {
+  return chained(async () => {
+    if (!dirtySettings.size) return
+    const keys = [...dirtySettings]
+    dirtySettings.clear()
+    try {
+      const server = ((await api.settings()).ui as Partial<Settings> | undefined) ?? {}
+      const mine = useStore.getState().settings
+      const next = { ...DEFAULT_SETTINGS, ...mine, ...server } as Settings
+      for (const k of keys) (next as unknown as Record<string, unknown>)[k] = mine[k]
+      await api.putSettings({ ui: next })
+      applySettings(next)
+    } catch (e) {
+      for (const k of keys) dirtySettings.add(k)
+      throw e
+    }
+  })
+}
+
+/** Take the account-wide layout fields from the server copy, except those this tab changed and has not saved yet. */
+function applyShared(l: Partial<LayoutState>) {
+  const s = useStore.getState()
+  const patch: Partial<AppState> = {}
+  for (const k of SHARED_LAYOUT) {
+    if (dirtyLayout.has(k) || l[k] === undefined || same(l[k], s[k])) continue
+    ;(patch as Record<string, unknown>)[k] = l[k]
+  }
+  if (!Object.keys(patch).length) return
+  if (patch.theme) document.documentElement.dataset.theme = patch.theme
+  useStore.setState(patch)
+}
+
+function applySettings(server: Partial<Settings>) {
+  const cur = useStore.getState().settings
+  const next = { ...cur }
+  let changed = false
+  for (const [k, v] of Object.entries(server) as Array<[keyof Settings, unknown]>) {
+    if (dirtySettings.has(k) || same(v, cur[k])) continue
+    ;(next as unknown as Record<string, unknown>)[k] = v
+    changed = true
+  }
+  if (!changed) return
+  useStore.setState({ settings: next })
+  applyCandleVars(next)
+  setFibDefaults(next.fibDefaults)
+  setPositionDefaults(next.positionDefaults)
+}
+
+let lastPull = 0
+/** A tab came back to the front: pick up what other devices / tabs of the account changed meanwhile. */
+async function pullShared() {
+  const now = Date.now()
+  if (now - lastPull < 3000 || !useStore.getState().ready) return
+  lastPull = now
+  await saveChain
+  try {
+    const [lay, set] = await Promise.all([api.layout('last').catch((e) => { if (isMissing(e)) return null; throw e }), api.settings()])
+    if (lay) applyShared(lay.state as Partial<LayoutState>)
+    const ui = set.ui as Partial<Settings> | undefined
+    if (ui) applySettings(ui)
+  } catch { /* offline: try on the next focus */ }
+}
+
+let pullHooked = false
+function hookPull() {
+  if (pullHooked) return
+  pullHooked = true
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void pullShared() })
+  window.addEventListener('focus', () => { void pullShared() })
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10)
@@ -155,11 +271,9 @@ async function optimistic(set: (p: Partial<AppState>) => void, get: () => AppSta
 
 /** Write out debounced layout/settings saves now (before a reload, e.g. switching the language). */
 export async function flushPendingSaves(): Promise<void> {
-  const jobs: Promise<unknown>[] = []
-  const s = useStore.getState()
-  if (persistTimer) { window.clearTimeout(persistTimer); persistTimer = null; if (s.ready && s.symbol) jobs.push(api.putLayout('last', layoutState(s) as unknown as Record<string, unknown>)) }
-  if (settingsTimer) { window.clearTimeout(settingsTimer); settingsTimer = null; jobs.push(api.putSettings({ ui: s.settings })) }
-  await Promise.race([Promise.allSettled(jobs), new Promise((r) => window.setTimeout(r, 3000))])
+  if (persistTimer) { window.clearTimeout(persistTimer); persistTimer = null; void saveLast() }
+  if (settingsTimer) { window.clearTimeout(settingsTimer); settingsTimer = null; void saveSettings() }
+  await Promise.race([saveChain, new Promise((r) => window.setTimeout(r, 3000))])
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -219,25 +333,26 @@ export const useStore = create<AppState>((set, get) => ({
     })
     void get().loadWatchlists()
     void get().refreshLayouts()
+    hookPull()
   },
 
-  setSymbol: (s) => { set({ symbol: s, selectedOverlayId: null, tool: null, lastBar: null, sheet: null }); schedulePersist(get) },
+  setSymbol: (s) => { set({ symbol: s, selectedOverlayId: null, tool: null, lastBar: null, sheet: null }); schedulePersist('symbolId') },
   setSymbolById: async (id) => {
     try { get().setSymbol(await api.symbol(id)) } catch (e) { set({ error: (e as Error).message }) }
   },
-  setInterval: (iv) => { set({ interval: iv, lastBar: null }); schedulePersist(get) },
-  setChartType: (t) => { set({ chartType: t }); schedulePersist(get) },
-  setTheme: (t) => { document.documentElement.dataset.theme = t; set({ theme: t }); schedulePersist(get) },
-  setTimezone: (tz) => { set({ timezone: tz }); schedulePersist(get) },
+  setInterval: (iv) => { set({ interval: iv, lastBar: null }); schedulePersist('interval') },
+  setChartType: (t) => { set({ chartType: t }); schedulePersist('chartType') },
+  setTheme: (t) => { document.documentElement.dataset.theme = t; set({ theme: t }); schedulePersist('theme') },
+  setTimezone: (tz) => { set({ timezone: tz }); schedulePersist('timezone') },
 
   addIndicator: (name, main, calcParams, options) => {
     set({ indicators: [...get().indicators, { key: uid(), name, main, calcParams, ...(options ? { options } : {}) }] })
-    schedulePersist(get)
+    schedulePersist('indicators')
   },
-  removeIndicator: (key) => { set({ indicators: get().indicators.filter((i) => i.key !== key) }); schedulePersist(get) },
+  removeIndicator: (key) => { set({ indicators: get().indicators.filter((i) => i.key !== key) }); schedulePersist('indicators') },
   updateIndicator: (key, patch) => {
     set({ indicators: get().indicators.map((i) => (i.key === key ? { ...i, ...patch } : i)) })
-    schedulePersist(get)
+    schedulePersist('indicators')
   },
   setSettings: (patch) => {
     const settings = { ...get().settings, ...patch }
@@ -245,15 +360,14 @@ export const useStore = create<AppState>((set, get) => ({
     applyCandleVars(settings)
     setFibDefaults(settings.fibDefaults)
     setPositionDefaults(settings.positionDefaults)
-    if (settingsTimer) window.clearTimeout(settingsTimer)
-    settingsTimer = window.setTimeout(() => { api.putSettings({ ui: get().settings }).catch(() => { /* ignore */ }) }, 300)
+    scheduleSettings(Object.keys(patch) as Array<keyof Settings>)
   },
 
   setTool: (tool) => set({ tool }),
   setMagnet: (m) => set({ magnet: m }),
   setSelectedOverlay: (id) => set({ selectedOverlayId: id }),
   setEditOverlay: (id) => set({ editOverlayId: id }),
-  toggleWatchlist: () => { set({ showWatchlist: !get().showWatchlist }); schedulePersist(get) },
+  toggleWatchlist: () => { set({ showWatchlist: !get().showWatchlist }); schedulePersist('showWatchlist') },
   setSheet: (s) => set({ sheet: s }),
   setWsStatus: (s) => set({ wsStatus: s }),
   setQuotes: (q) => set({ quotes: { ...get().quotes, ...q } }),
@@ -266,7 +380,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({ watchlists, activeWatchlistId: watchlists.some((w) => w.id === active) ? active : watchlists[0]?.id ?? null })
     } catch (e) { set({ error: (e as Error).message }) }
   },
-  setActiveWatchlist: (id) => { set({ activeWatchlistId: id }); schedulePersist(get) },
+  setActiveWatchlist: (id) => { set({ activeWatchlistId: id }); schedulePersist('activeWatchlistId') },
   addToWatchlist: async (symbolId, watchlistId) => {
     const wid = watchlistId ?? get().activeWatchlistId
     const wl = get().watchlists.find((w) => w.id === wid)
@@ -328,7 +442,7 @@ export const useStore = create<AppState>((set, get) => ({
       indicators: l.indicators ?? get().indicators,
       selectedOverlayId: null, tool: null, sheet: null,
     })
-    schedulePersist(get)
+    schedulePersist('symbolId', 'interval', 'chartType', 'theme', 'timezone', 'indicators')
   },
   deleteLayout: async (name) => {
     await api.deleteLayout(name)
