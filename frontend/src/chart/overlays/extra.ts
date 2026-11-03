@@ -2,6 +2,9 @@
  * Extra drawing tools ported from KLineChart Pro (https://github.com/klinecharts/pro, Apache-2.0)
  * and adapted to the klinecharts v10 overlay API: `precision` now comes from the chart symbol,
  * fill colours come from the theme's overlay styles instead of hard-coded blue.
+ *
+ * Licensed under the Apache License, Version 2.0 (licenses/Apache-2.0.txt), unlike the rest of the project (MIT);
+ * see THIRD_PARTY_NOTICES.md.
  */
 import { utils, type Bounding, type Coordinate, type LineAttrs, type OverlayTemplate, type TextAttrs, type PolygonAttrs, type CircleAttrs } from 'klinecharts'
 

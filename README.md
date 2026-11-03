@@ -41,3 +41,8 @@ in `backend/app/limits.py`. Optional: `TELEGRAM_BOT_TOKEN` for alerts, a GitHub 
 Tests: `cd backend && ../venv/bin/python -m pytest -q`; type check and build: `cd frontend && npx tsc -b && npm run build`.
 
 Notes for AI coding agents: [AGENTS.md](AGENTS.md).
+
+## License
+
+[MIT](LICENSE). The drawing tools ported from KLineChart Pro (`frontend/src/chart/overlays/extra.ts`) stay under the
+Apache License 2.0 — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
