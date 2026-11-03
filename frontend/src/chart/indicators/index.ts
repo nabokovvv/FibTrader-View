@@ -3,6 +3,7 @@ import { t as tr } from '../../i18n'
 import { PLUGIN_INDICATORS } from '../../plugins'
 import { COMPARE } from './compare'
 import { FUNDING, LIQ, OI, VPVR } from './extra'
+import { ALERT_LINES_TEMPLATE } from './alertLines'
 
 /**
  * Custom indicators missing from KLineChart's built-in set. All `calc` functions return one record per
@@ -280,7 +281,7 @@ const HMA: IndicatorTemplate<Rec, number> = {
 
 export const CUSTOM_INDICATORS = [ATR, VWAP, SUPERTREND, STOCH, ICHIMOKU, PIVOTS, KELTNER, DONCHIAN, HMA]
 // templates with their own legends / async data (registered as they are)
-const EXTRA_INDICATORS = [COMPARE, VPVR, FUNDING, OI, LIQ] as unknown as IndicatorTemplate[]
+const EXTRA_INDICATORS = [COMPARE, VPVR, FUNDING, OI, LIQ, ALERT_LINES_TEMPLATE] as unknown as IndicatorTemplate[]
 
 /** Finite, within ±1000 (periods, multipliers). */
 export function safeParam(p: unknown): number {

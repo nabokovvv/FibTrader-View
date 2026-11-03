@@ -8,7 +8,9 @@ import type { Bar, DrawingRecord, Interval, SymbolInfo } from '../lib/types'
 import { toolStyle, useStore } from '../state/store'
 import { PERIOD, intervalOf } from './periods'
 import { ALERT_FEATURE_ID, buildStyles } from './theme'
-import { alertMarkets, openAlertAt } from '../state/alerts'
+import { alertMarkets, openAlertAt, useAlerts } from '../state/alerts'
+import { ALERT_LINES, ALERT_LINES_ID, type AlertLevel } from './indicators/alertLines'
+import { replaceIndicatorExtend } from './extend'
 import { fmtPrice } from '../components/ui'
 import { Bell } from 'lucide-react'
 import { registerCustomOverlays } from './overlays'
@@ -243,6 +245,24 @@ export function ChartView() {
     return () => { document.removeEventListener('mousedown', close); document.removeEventListener('wheel', close); document.removeEventListener('keydown', onKey) }
   }, [menu])
   useEffect(() => setMenu(null), [symbol, interval])
+
+  // armed price alerts of this symbol: dashed lines with a bell label (alerts on drawings show as the drawing)
+  const alerts = useAlerts((s) => s.alerts)
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    const levels: AlertLevel[] = symbol
+      ? alerts.filter((a) => a.active && a.symbol === symbol.id && a.level != null && !a.line && !a.drawing_id)
+        .map((a) => ({ price: a.level as number, cond: a.cond }))
+      : []
+    const has = chart.getIndicators({ id: ALERT_LINES_ID }).length > 0
+    if (!levels.length) {
+      if (has) chart.removeIndicator({ id: ALERT_LINES_ID })
+      return
+    }
+    if (has) replaceIndicatorExtend(chart, ALERT_LINES_ID, ALERT_LINES, { levels })
+    else chart.createIndicator({ id: ALERT_LINES_ID, name: ALERT_LINES, paneId: 'candle_pane', extendData: { levels } }, true)
+  }, [alerts, symbol])
 
   useEffect(() => {
     chartRef.current?.setTimezone(timezone)
