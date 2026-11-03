@@ -49,7 +49,7 @@ export function TopBar({ compact }: { compact: boolean }) {
 
       <button className="tb-btn !h-8 max-w-[46vw] gap-2 !px-2 sm:max-w-none" onClick={() => setSheet('search')} title={t('Search symbol (⌘K)')}>
         <Search className="!h-4 !w-4 shrink-0 text-muted" />
-        <span className="truncate text-[14px] font-semibold text-text">{symbol ? tickerOf(symbol) : '—'}</span>
+        <span className="min-w-[3rem] truncate text-[14px] font-semibold text-text">{symbol ? tickerOf(symbol) : '—'}</span>
         {symbol && !compact && <MarketBadge market={symbol.market} currency={symbol.currency} />}
         {symbol && !compact && <span className="hidden max-w-[220px] truncate text-muted lg:inline">{symName(symbol.name)}</span>}
       </button>
@@ -81,7 +81,7 @@ export function TopBar({ compact }: { compact: boolean }) {
       />
 
       <button className="tb-btn" onClick={() => setSheet('indicators')} title={t('Indicators')}>
-        <SlidersHorizontal />{!compact && <span className="text-[12px]">{t('Indicators')}</span>}
+        <SlidersHorizontal />{!compact && <span className="hidden text-[12px] xl:inline">{t('Indicators')}</span>}
       </button>
       {!compact && (
         <button className="tb-btn" onClick={() => setSheet('compare')} title={t('Compare with another symbol')}>

@@ -31,6 +31,7 @@ CODE_TTL_MS = 15 * 60_000
 MARKET_NAME = {
     "bybit": {"en": "Bybit perpetual", "ru": "Bybit фьючерс"},
     "bybit-spot": {"en": "Bybit spot", "ru": "Bybit спот"},
+    "hl": {"en": "Hyperliquid", "ru": "Hyperliquid"},
 }
 COND_TEXT = {
     "cross": {"en": "crossed", "ru": "пересекла"},
@@ -41,7 +42,7 @@ COND_TEXT = {
 
 # ----------------------------------------------------------------------- feeds
 class Feed(Protocol):
-    async def prices(self) -> dict[str, float]: ...
+    async def prices(self, wanted: set[str]) -> dict[str, float]: ...
 
 
 class BybitFeed:
@@ -50,7 +51,7 @@ class BybitFeed:
     def __init__(self, provider):
         self.provider = provider
 
-    async def prices(self) -> dict[str, float]:
+    async def prices(self, wanted: set[str]) -> dict[str, float]:
         out: dict[str, float] = {}
         for t in await self.provider.tickers():
             try:
@@ -60,8 +61,22 @@ class BybitFeed:
         return out
 
 
+class HyperliquidFeed:
+    """Mid prices of every market of a Hyperliquid exchange in one cheap request (weight 2), only for the exchanges
+    that have armed alerts."""
+
+    def __init__(self, provider):
+        self.provider = provider
+
+    async def prices(self, wanted: set[str]) -> dict[str, float]:
+        return await self.provider.mids(wanted)
+
+
 def build_feeds(providers: dict) -> dict[str, Feed]:
-    return {m: BybitFeed(p) for m, p in providers.items() if m in ("bybit", "bybit-spot")}
+    feeds: dict[str, Feed] = {m: BybitFeed(p) for m, p in providers.items() if m in ("bybit", "bybit-spot")}
+    if "hl" in providers:
+        feeds["hl"] = HyperliquidFeed(providers["hl"])
+    return feeds
 
 
 # ---------------------------------------------------------------------- checks
@@ -136,7 +151,7 @@ class AlertEngine:
             if feed is None or not by_sym:
                 continue
             try:
-                px = await feed.prices()
+                px = await feed.prices(set(by_sym))
             except Busy:
                 continue  # the shared Bybit budget is in use by charts: next tick
             except Exception as exc:  # noqa: BLE001

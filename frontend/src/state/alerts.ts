@@ -3,6 +3,7 @@ import { api, type Alert } from '../api/client'
 import { serverFeatures } from '../auth/session'
 import { t } from '../i18n'
 import { fmtPrice } from '../components/ui'
+import { idTicker } from '../lib/types'
 import { useStore } from './store'
 
 /** An alert being created from a drawing (bell in the selection toolbar). */
@@ -53,7 +54,7 @@ export function startAlertWatcher(): () => void {
     const fired = useAlerts.getState().alerts.filter((a) => armed.has(a.id) && !a.active && a.fired_at)
     if (fired.length) {
       const a = fired[0]
-      const name = a.symbol.split(':')[1] ?? a.symbol
+      const name = idTicker(a.symbol)
       const more = fired.length > 1 ? ` (+${fired.length - 1})` : ''
       useStore.setState({ notice: `🔔 ${t('{name}: price {cond} {target}', { name, cond: t(COND_LABEL[a.cond]).toLowerCase(), target: alertTarget(a) })}${more}` })
     }

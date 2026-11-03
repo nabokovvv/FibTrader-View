@@ -81,8 +81,10 @@ class Jobs:
     async def db_upkeep(self) -> None:
         """Weekly: planner statistics and WAL checkpoint for every database."""
         def run():
-            for m in self.state.providers:
+            for m, p in self.state.providers.items():
                 self.state.stores.get(m).compact()
+                if getattr(p, "archive_intervals", None):
+                    self.state.stores.get(f"{m}-archive").compact()
             self.state.userdb.optimize()
         await asyncio.to_thread(run)
         log.info("weekly db upkeep done")

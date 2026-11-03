@@ -198,19 +198,25 @@ class AsyncBucket:
         self.rate, self.burst = rate, burst
         self._tokens, self._ts = burst, time.monotonic()
 
-    async def acquire(self, timeout: float = 10.0) -> None:
+    async def acquire(self, timeout: float = 10.0, cost: float = 1.0) -> None:
+        """Take `cost` tokens (weighted APIs: Hyperliquid charges by request type and response size)."""
+        cost = min(cost, self.burst)
         deadline = time.monotonic() + timeout
         while True:
             now = time.monotonic()
             self._tokens = min(self.burst, self._tokens + (now - self._ts) * self.rate)
             self._ts = now
-            if self._tokens >= 1:
-                self._tokens -= 1
+            if self._tokens >= cost:
+                self._tokens -= cost
                 return
-            wait = (1 - self._tokens) / self.rate
+            wait = (cost - self._tokens) / self.rate
             if now + wait > deadline:
                 raise Busy("upstream budget exhausted")
             await asyncio.sleep(wait)
+
+    def drain(self) -> None:
+        """The upstream said "too many requests": spend everything so the next calls wait."""
+        self._tokens, self._ts = 0.0, time.monotonic()
 
 
 _bybit_bucket: AsyncBucket | None = None
@@ -231,6 +237,30 @@ def bybit_bucket() -> AsyncBucket:
         p = profile()
         _bybit_bucket = AsyncBucket(p.bybit_rps, p.bybit_burst)
     return _bybit_bucket
+
+
+# Hyperliquid limits REST by weight per IP: 1200 per minute (candles cost 20 + 1 per 60 bars, allMids 2, most other
+# info requests 20). Charts, quotes and alerts share one budget; the archive, the OI recorder and catalogue refreshes
+# have their own, smaller one. Worst minute: 300 + 9*60 + 60 + 3.5*60 = 1110 < 1200.
+HL_RATE, HL_BURST = 9.0, 300.0
+HL_BG_RATE, HL_BG_BURST = 3.5, 60.0
+_hl: dict[str, AsyncBucket] = {}
+_hl_sem: asyncio.Semaphore | None = None
+
+
+def hl_bucket(background: bool = False) -> AsyncBucket:
+    key = "bg" if background else "fg"
+    b = _hl.get(key)
+    if b is None:
+        b = _hl[key] = AsyncBucket(HL_BG_RATE, HL_BG_BURST) if background else AsyncBucket(HL_RATE, HL_BURST)
+    return b
+
+
+def hl_semaphore() -> asyncio.Semaphore:
+    global _hl_sem
+    if _hl_sem is None:
+        _hl_sem = asyncio.Semaphore(3)
+    return _hl_sem
 
 
 def public_limits() -> dict:

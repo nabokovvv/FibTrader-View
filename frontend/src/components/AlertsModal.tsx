@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ApiError, api, type Alert, type AlertCond } from '../api/client'
 import { serverLimits } from '../auth/session'
 import { getLang, t } from '../i18n'
+import { idTicker } from '../lib/types'
 import { COND_LABEL, alertMarkets, alertTarget, useAlerts } from '../state/alerts'
 import { useStore } from '../state/store'
 import { fmtPrice, Modal } from './ui'
@@ -111,7 +112,7 @@ export function AlertsModal({ onClose }: { onClose: () => void }) {
 }
 
 function AlertRow({ a, onAct, onOpen }: { a: Alert; onAct: (fn: () => Promise<unknown>) => void; onOpen: () => void }) {
-  const name = a.symbol.split(':')[1] ?? a.symbol
+  const name = idTicker(a.symbol)
   const spot = a.symbol.startsWith('bybit-spot:')
   const when = a.fired_at ? new Date(a.fired_at).toLocaleString(getLang() === 'ru' ? 'ru-RU' : 'en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''
   return (

@@ -115,6 +115,15 @@ export const RU: Record<string, string> = {
   'Try the coin ticker, like BTC or 1000PEPE.': 'Попробуйте тикер монеты, например BTC или 1000PEPE.',
   'Search Bybit perps and spot, US stocks, MOEX, global indices, commodities and FX.': 'Ищите фьючерсы и спот Bybit, акции США, MOEX, мировые индексы, товары и валюты.',
   'Search Bybit perpetuals and spot.': 'Ищите бессрочные фьючерсы и спот Bybit.',
+  'Ticker or name: BTC, TSLA, gold, SPX, oil…': 'Тикер или название: BTC, TSLA, золото, SPX, нефть…',
+  'Search Bybit perps and spot, plus stocks, indices, commodities and FX as Hyperliquid perpetuals.':
+    'Ищите фьючерсы и спот Bybit, а также акции, индексы, сырьё и валюты — бессрочные фьючерсы Hyperliquid.',
+  'Try a ticker like TSLA, GOLD or SP500.': 'Попробуйте тикер, например TSLA, GOLD или SP500.',
+  'HL marks Hyperliquid perpetuals. They trade around the clock, so prices can differ from the exchange price of the stock, index or commodity.':
+    'HL — бессрочные фьючерсы Hyperliquid. Они торгуются круглосуточно, поэтому цена может отличаться от биржевой цены акции, индекса или сырья.',
+  'Perpetual on Hyperliquid: trades around the clock, so its price can differ from the exchange price of the underlying.':
+    'Бессрочный фьючерс Hyperliquid: торгуется круглосуточно, поэтому цена может отличаться от биржевой цены базового актива.',
+  'Hyperliquid': 'Hyperliquid',
   'Bybit Spot': 'Bybit Спот',
   'Global': 'Мир',
   'USDC-margined perpetual': 'Бессрочный фьючерс с маржой в USDC',
@@ -288,8 +297,8 @@ export const RU: Record<string, string> = {
   'For a short, target must be below entry and stop above.': 'Для шорта цель должна быть ниже входа, а стоп выше.',
 
   // ---------------------------------------------------------------- sign-in
-  'Crypto charts with drawing tools. Sign in to keep your drawings and watchlists on every device.':
-    'Криптографики с инструментами рисования. Войдите, чтобы рисунки и списки были с вами на любом устройстве.',
+  'Charts of crypto, stocks, indices and commodities with drawing tools. Sign in to keep your drawings and watchlists on every device.':
+    'Графики криптовалют, акций, индексов и сырья с инструментами рисования. Войдите, чтобы рисунки и списки были с вами на любом устройстве.',
   'Continue with Google': 'Войти через Google',
   'or': 'или',
   'Email': 'Почта',
@@ -396,7 +405,8 @@ export const RU: Record<string, string> = {
   'Liquidations': 'Ликвидации',
   'Open interest is available from the 5m interval.': 'Открытый интерес доступен с таймфрейма 5м.',
   'Liquidations are recorded for the top 50 coins by turnover.': 'Ликвидации записываются для топ-50 монет по обороту.',
-  'Available for Bybit perpetuals only.': 'Только для фьючерсов Bybit.',
+  'Available for perpetuals only.': 'Только для бессрочных фьючерсов.',
+  'This exchange does not publish liquidations.': 'Эта биржа не публикует ликвидации.',
   'No data right now.': 'Сейчас нет данных.',
   'Crossing': 'Пересечение',
   'Crossing up': 'Пересечение вверх',

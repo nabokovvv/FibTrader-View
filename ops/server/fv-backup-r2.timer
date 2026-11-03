@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily user-data backup to R2
+Description=Nightly database backup to R2
 [Timer]
 OnCalendar=*-*-* 04:10:00 UTC
 Persistent=true

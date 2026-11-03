@@ -253,7 +253,7 @@ async def test_full_cache_still_serves_the_whole_window(tmp_path):
     prov = FakeProvider(first_ts=now - 5 * DAY)
     svc = CandleService({"fake": prov}, StoreRegistry(tmp_path), backfill_bars=3000)
     await svc.get_bars(SYM, "1m", None, 100)                 # 100 bars stored
-    svc.can_persist = lambda: False                           # cache now full
+    svc.can_persist = lambda archive=False: False                           # cache now full
     page = await svc.get_bars(SYM, "1m", None, 600)
     assert len(page.bars) >= 590
 

@@ -8,14 +8,36 @@ import { useStore } from '../state/store'
 import { addCompare } from '../chart/indicators/compare'
 import { MarketBadge, Modal, symName } from './ui'
 
-const ALL_FILTERS = ['all', 'bybit', 'us', 'moex', 'yahoo', 'bybit-spot'] as const
+const ALL_FILTERS = ['all', 'bybit', 'us', 'moex', 'yahoo', 'hl', 'bybit-spot'] as const
 type Filter = (typeof ALL_FILTERS)[number]
 /** Only the markets this server serves (the public instance has Bybit only). */
 const marketFilters = (): Filter[] => {
   const on = availableMarkets()
   return on.length ? ALL_FILTERS.filter((m) => m === 'all' || on.includes(m)) : [...ALL_FILTERS]
 }
-const cryptoOnly = () => { const on = availableMarkets(); return on.length > 0 && on.every((m) => m.startsWith('bybit')) }
+/** What this server offers: crypto only, crypto + Hyperliquid perps (public instance), or every market. */
+type Scope = 'crypto' | 'hl' | 'all'
+const marketScope = (): Scope => {
+  const on = availableMarkets()
+  if (!on.length) return 'all'
+  if (on.every((m) => m.startsWith('bybit'))) return 'crypto'
+  return on.every((m) => m.startsWith('bybit') || m === 'hl') ? 'hl' : 'all'
+}
+const PLACEHOLDER: Record<Scope, string> = {
+  crypto: 'Ticker or coin: BTC, ETH, SOL, PEPE…',
+  hl: 'Ticker or name: BTC, TSLA, gold, SPX, oil…',
+  all: 'Ticker or name: BTC, SBER, Apple, gold, SPX…',
+}
+const SHORTCUTS: Record<Scope, string[]> = {
+  crypto: ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'HYPE'],
+  hl: ['BTC', 'ETH', 'TSLA', 'NVDA', 'GOLD', 'SPX', 'OIL'],
+  all: ['GOLD', 'SPX', 'BRENT', 'DAX', 'IMOEX', 'EURUSD'],
+}
+const INTRO: Record<Scope, string> = {
+  crypto: 'Search Bybit perpetuals and spot.',
+  hl: 'Search Bybit perps and spot, plus stocks, indices, commodities and FX as Hyperliquid perpetuals.',
+  all: 'Search Bybit perps and spot, US stocks, MOEX, global indices, commodities and FX.',
+}
 
 /** Symbol search dialog. In "add" mode results get a + button that adds to the active watchlist. */
 export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; mode?: 'open' | 'add' | 'compare' }) {
@@ -24,7 +46,8 @@ export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; 
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState<Filter>('all')
   const filters = useMemo(marketFilters, [])
-  const crypto = useMemo(cryptoOnly, [])
+  const scope = useMemo(marketScope, [])
+  const crypto = scope === 'crypto'
   const [cursor, setCursor] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLUListElement>(null)
@@ -81,7 +104,7 @@ export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; 
           <Search className="h-4 w-4 shrink-0 text-muted" />
           <input
             ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey}
-            placeholder={t(crypto ? 'Ticker or coin: BTC, ETH, SOL, PEPE…' : 'Ticker or name: BTC, SBER, Apple, gold, SPX…')}
+            placeholder={t(PLACEHOLDER[scope])}
             className="h-full flex-1 text-[15px] placeholder:text-faint"
             autoCapitalize="off" autoCorrect="off" spellCheck={false}
           />
@@ -130,18 +153,23 @@ export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; 
         {!shown.length && query && !loading && (
           <li className="px-4 py-10 text-center text-muted">
             {filter !== 'all' ? t('Nothing matches “{q}” in {market}.', { q: query, market: t(MARKET_LABEL[filter] ?? filter) }) : t('Nothing matches “{q}”.', { q: query })}
-            <div className="mt-1 text-[12px] text-faint">{t(crypto ? 'Try the coin ticker, like BTC or 1000PEPE.' : filter !== 'all' ? 'Try a full ticker like GC=F or ASML.AS, or switch to All.' : 'Try a full ticker like GC=F or ASML.AS.')}</div>
+            <div className="mt-1 text-[12px] text-faint">{t(crypto ? 'Try the coin ticker, like BTC or 1000PEPE.' : scope === 'hl' ? 'Try a ticker like TSLA, GOLD or SP500.' : filter !== 'all' ? 'Try a full ticker like GC=F or ASML.AS, or switch to All.' : 'Try a full ticker like GC=F or ASML.AS.')}</div>
           </li>
         )}
         {!query && (
           <li className="px-3 py-6 text-[12.5px] leading-6 text-muted">
-            {t(crypto ? 'Search Bybit perpetuals and spot.' : 'Search Bybit perps and spot, US stocks, MOEX, global indices, commodities and FX.')}
+            {t(INTRO[scope])}
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <span className="text-faint">{t('Shortcuts:')}</span>
-              {(crypto ? ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'HYPE'] : ['GOLD', 'SPX', 'BRENT', 'DAX', 'IMOEX', 'EURUSD']).map((a) => (
+              {SHORTCUTS[scope].map((a) => (
                 <button key={a} className="chip !h-6 !px-2 !text-[11px]" onClick={() => { setQ(a); inputRef.current?.focus() }}>{a}</button>
               ))}
             </div>
+            {availableMarkets().includes('hl') && (
+              <p className="mt-3 text-[12px] leading-5 text-faint">
+                {t('HL marks Hyperliquid perpetuals. They trade around the clock, so prices can differ from the exchange price of the stock, index or commodity.')}
+              </p>
+            )}
           </li>
         )}
       </ul>

@@ -20,6 +20,9 @@ export interface SymbolInfo {
 
 export const tickerOf = (s: Pick<SymbolInfo, 'symbol' | 'display'>) => s.display || s.symbol
 
+/** Ticker from a symbol id when its metadata is not at hand: "bybit:BTCUSDT" → BTCUSDT, "hl:xyz:TSLA" → TSLA. */
+export const idTicker = (id: string) => id.split(':').slice(1).at(-1) || id
+
 /** [ts_ms, open, high, low, close, volume] */
 export type Bar = [number, number, number, number, number, number]
 
@@ -76,4 +79,5 @@ export const MARKET_LABEL: Record<string, string> = {
   us: 'US',
   moex: 'MOEX',
   yahoo: 'Global',
+  hl: 'Hyperliquid',
 }

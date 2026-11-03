@@ -90,7 +90,7 @@ class FakeFeed:
     def __init__(self, seq):
         self.seq = list(seq)
 
-    async def prices(self):
+    async def prices(self, wanted=None):
         return self.seq.pop(0)
 
 

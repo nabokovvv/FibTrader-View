@@ -56,13 +56,16 @@ def build_providers() -> dict[str, Provider]:
         providers["moex"] = MoexProvider()
     if on("yahoo"):
         providers["yahoo"] = YahooProvider()
+    if on("hl"):
+        from .markets.hyperliquid import HyperliquidProvider
+        providers["hl"] = HyperliquidProvider()
     if on("us"):
         if config.has_alpaca():
             from .markets.alpaca import AlpacaProvider
             providers["us"] = AlpacaProvider()
         else:
             log.warning("Alpaca keys missing: US stocks market disabled")
-    unknown = set(config.MARKETS) - {"bybit", "bybit-spot", "moex", "yahoo", "us"}
+    unknown = set(config.MARKETS) - {"bybit", "bybit-spot", "moex", "yahoo", "us", "hl"}
     if unknown:
         log.warning("LV_MARKETS: unknown markets ignored: %s", ", ".join(sorted(unknown)))
     return providers
@@ -106,12 +109,17 @@ async def lifespan(app: FastAPI):
     app.state.alerts = AlertEngine(app.state.userdb, build_feeds(providers), app.state.symbols, bot)
     from .feedback import FeedbackWorker
     app.state.feedback = FeedbackWorker(app.state.userdb, bot)
-    app.state.derivs = app.state.liq = None
-    if "bybit" in providers:
-        from .derivs import DerivStore, Derivs, LiqRecorder
-        app.state.derivs = Derivs(DerivStore(config.CANDLES_DIR / "derivs.sqlite"), providers["bybit"])
-        if config.LIQUIDATIONS:
+    app.state.derivs = app.state.liq = app.state.hl_oi = app.state.hl_archive = None
+    if "bybit" in providers or "hl" in providers:
+        from .derivs import DerivStore, Derivs, HLOIRecorder, LiqRecorder
+        app.state.derivs = Derivs(DerivStore(config.CANDLES_DIR / "derivs.sqlite"), providers.get("bybit"), providers.get("hl"))
+        if config.LIQUIDATIONS and "bybit" in providers:
             app.state.liq = LiqRecorder(app.state.derivs)
+        if config.HL_ARCHIVE and "hl" in providers:
+            app.state.hl_oi = HLOIRecorder(app.state.derivs)
+    if config.HL_ARCHIVE and "hl" in providers:
+        from .hl_archive import HLArchiver
+        app.state.hl_archive = HLArchiver(providers["hl"], app.state.candles)
     from .jobs import Jobs
     app.state.jobs = Jobs(app.state)
     plugins.startup(app.state)
@@ -120,6 +128,9 @@ async def lifespan(app: FastAPI):
     await app.state.feedback.start()
     if app.state.liq:
         await app.state.liq.start()
+    for job in (app.state.hl_oi, app.state.hl_archive):
+        if job:
+            await job.start()
     app.state.jobs.start()
     log.info("FibTrader View backend up on %s:%s (markets: %s; plugins: %s)", config.HOST, config.PORT,
              ", ".join(providers), ", ".join(plugins.names()) or "none")
@@ -132,6 +143,9 @@ async def lifespan(app: FastAPI):
         await app.state.feedback.stop()
         if app.state.liq:
             await app.state.liq.stop()
+        for job in (app.state.hl_oi, app.state.hl_archive):
+            if job:
+                await job.stop()
         if app.state.derivs:
             app.state.derivs.store.close()
         if app.state.telegram:

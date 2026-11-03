@@ -1,6 +1,8 @@
 [Unit]
-Description=Copy the user-data backup to Cloudflare R2
+Description=Back up the databases that cannot be rebuilt to Cloudflare R2 (one current copy)
 After=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/fv-backup-r2
+Nice=10
+TimeoutStartSec=45min

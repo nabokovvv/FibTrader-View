@@ -73,6 +73,15 @@ DEFAULT_WATCHLISTS: list[tuple[str, list[str]]] = [
     ("FX", [f"yahoo:{s}" for s in ["EURUSD=X", "GBPUSD=X", "JPY=X", "CHF=X", "AUDUSD=X", "CAD=X", "CNY=X", "RUB=X",
                                    "EURRUB=X", "CNYRUB=X"]]),
 ]
+# Where the exchange-data markets are off (the public instance), the same lists come from Hyperliquid perpetuals.
+HL_LISTS: dict[str, list[str]] = {
+    "US Stocks": [f"hl:xyz:{s}" for s in ["NVDA", "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "TSM", "ORCL",
+                                          "AMD", "MU", "PLTR", "NFLX", "LLY", "COST", "COIN", "HOOD", "MSTR", "INTC"]],
+    "Indices": [f"hl:xyz:{s}" for s in ["SP500", "XYZ100", "JP225", "KR200", "NIFTY"]] + ["hl:para:10Y", "hl:para:2Y"],
+    "Commodities": [f"hl:xyz:{s}" for s in ["GOLD", "SILVER", "PLATINUM", "PALLADIUM", "COPPER", "CL", "BRENTOIL",
+                                            "NATGAS"]],
+    "FX": [f"hl:xyz:{s}" for s in ["EUR", "GBP", "JPY"]],
+}
 FALLBACK_CRYPTO = [f"bybit:{s}USDT" for s in ["BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "ADA", "SUI", "LINK", "AVAX",
                                                "HYPE", "TON", "TRX", "LTC", "DOT", "BCH", "PEPE", "WIF", "ARB", "OP"]]
 
@@ -106,11 +115,20 @@ async def _seed_watchlists(request: Request, uid: str) -> None:
                 return
             crypto = await _top_crypto(request)
             markets = request.app.state.providers
+            hl_listed: set[str] = set()
+            if "hl" in markets:
+                try:
+                    hl_listed = {i.id for i in await markets["hl"].symbols()}
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("seed: hyperliquid markets failed: %s", exc)
             lists = []
             for name, items in DEFAULT_WATCHLISTS:
                 if name == "Crypto":
                     items = crypto
-                items = [i for i in items if i.split(":", 1)[0] in markets][: lim().watchlist_items]
+                items = [i for i in items if i.split(":", 1)[0] in markets]
+                if not items:
+                    items = [i for i in HL_LISTS.get(name, []) if i in hl_listed]
+                items = items[: lim().watchlist_items]
                 if items:
                     lists.append((name, items))
             if await db(request, "seed_watchlists_checked", uid, lists, max_lists=lim().watchlists, quota=quota()):

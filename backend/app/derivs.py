@@ -1,4 +1,7 @@
-"""Derivatives data for the crypto panels: funding rate, open interest and liquidations (Bybit perpetuals only).
+"""Derivatives data for the perpetual panels: funding rate, open interest and liquidations.
+
+Bybit perpetuals: all three (below). Hyperliquid: funding from its API (hourly), open interest recorded here every
+15 minutes since we started (Hyperliquid has no OI history), no liquidations (not published).
 
 * Funding and open interest come from Bybit REST in fixed pages (200 points each). Closed pages are kept in
   ``derivs.sqlite`` and never fetched again; the current page lives in memory for a minute. One API request may
@@ -21,7 +24,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from . import limits
-from .intervals import DAY, INTERVALS, MINUTE
+from .intervals import DAY, HOUR, INTERVALS, MINUTE
 
 log = logging.getLogger("lv.derivs")
 
@@ -30,6 +33,9 @@ OI_INTERVAL = {"5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "2h": "
                "1D": "1d", "1W": "1d", "1M": "1d"}
 OI_STEP = {"5min": 5 * MINUTE, "15min": 15 * MINUTE, "30min": 30 * MINUTE, "1h": 60 * MINUTE, "4h": 240 * MINUTE, "1d": DAY}
 FUNDING_STEP = 8 * 60 * MINUTE   # page span = 200 x 8 h; shorter funding intervals take extra requests per page
+STEP = {"funding": FUNDING_STEP, "hl_funding": HOUR}   # Hyperliquid pays funding every hour
+HL_OI_EVERY_MS = 15 * MINUTE
+HL_OI_FINE_DAYS = 30             # 15-minute OI points are kept this long, hourly ones for good
 LIQ_TOP = 50
 LIQ_KEEP_DAYS = 30
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
@@ -47,7 +53,9 @@ class DerivStore:
 CREATE TABLE IF NOT EXISTS pages(kind TEXT NOT NULL, symbol TEXT NOT NULL, iv TEXT NOT NULL, start INTEGER NOT NULL,
   data TEXT NOT NULL, accessed INTEGER NOT NULL, PRIMARY KEY(kind, symbol, iv, start)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS liq(symbol TEXT NOT NULL, ts INTEGER NOT NULL, long_usd REAL NOT NULL,
-  short_usd REAL NOT NULL, PRIMARY KEY(symbol, ts)) WITHOUT ROWID;""")
+  short_usd REAL NOT NULL, PRIMARY KEY(symbol, ts)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS hl_oi(symbol TEXT NOT NULL, ts INTEGER NOT NULL, oi REAL NOT NULL,
+  PRIMARY KEY(symbol, ts)) WITHOUT ROWID;""")
 
     def close(self) -> None:
         with self._lock:
@@ -87,18 +95,44 @@ CREATE TABLE IF NOT EXISTS liq(symbol TEXT NOT NULL, ts INTEGER NOT NULL, long_u
                 "GROUP BY b ORDER BY b", (bucket, bucket, symbol, start, end)).fetchall()
         return [[r[0], round(r[1], 2), round(r[2], 2)] for r in rows]
 
+    def add_hl_oi(self, rows: list[tuple[str, int, float]]) -> None:
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                self._conn.executemany("INSERT OR REPLACE INTO hl_oi(symbol, ts, oi) VALUES(?,?,?)", rows)
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def hl_oi(self, symbol: str, start: int, end: int, bucket: int) -> list[list[float]]:
+        """The last recorded value in each bucket, at the bucket start."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT (ts / ?) * ? AS b, oi, MAX(ts) FROM hl_oi WHERE symbol=? AND ts>=? AND ts<? GROUP BY b ORDER BY b",
+                (bucket, bucket, symbol, start, end)).fetchall()
+        return [[r[0], r[1]] for r in rows]
+
+    def hl_oi_first(self, symbol: str) -> int | None:
+        with self._lock:
+            r = self._conn.execute("SELECT MIN(ts) FROM hl_oi WHERE symbol=?", (symbol,)).fetchone()
+        return r[0] if r else None
+
     def prune(self, unused_days: int = 60) -> dict:
-        """Liquidations older than 30 days; cached pages nobody opened for `unused_days`."""
+        """Liquidations older than 30 days; cached pages nobody opened for `unused_days`; 15-minute Hyperliquid OI
+        points older than 30 days (the hourly ones stay)."""
         now = time.time()
         with self._lock:
             liq = self._conn.execute("DELETE FROM liq WHERE ts<?", (int((now - LIQ_KEEP_DAYS * 86400) * 1000),)).rowcount
             pages = self._conn.execute("DELETE FROM pages WHERE accessed<?", (int(now - unused_days * 86400),)).rowcount
-        return {"liq_rows": liq, "pages": pages}
+            oi = self._conn.execute("DELETE FROM hl_oi WHERE ts<? AND ts % ? != 0",
+                                    (int((now - HL_OI_FINE_DAYS * 86400) * 1000), HOUR)).rowcount
+        return {"liq_rows": liq, "pages": pages, "hl_oi_rows": oi}
 
 
 class Derivs:
-    def __init__(self, store: DerivStore, provider):
-        self.store, self.provider = store, provider
+    def __init__(self, store: DerivStore, provider, hl=None):
+        self.store, self.provider, self.hl = store, provider, hl   # Bybit linear and Hyperliquid providers (either may be None)
         self._hot: OrderedDict[tuple, tuple[float, list]] = OrderedDict()  # open (current) pages, 60 s
         self._sem = asyncio.Semaphore(2)
         self.recorded: set[str] = set()   # symbols the liquidation recorder listens to
@@ -108,7 +142,7 @@ class Derivs:
                      max_read: int = 12) -> dict:
         """Newest pages first; at most `max_pages` fetched from Bybit and `max_read` pages in total (cached or not),
         so one answer stays small (~2400 points); `covered_from` is the cursor for the next, older request."""
-        step = OI_STEP[iv] if kind == "oi" else FUNDING_STEP
+        step = OI_STEP[iv] if kind == "oi" else STEP[kind]
         span = PAGE * step
         now = int(time.time() * 1000)
         end = min(end, now + step)
@@ -150,6 +184,17 @@ class Derivs:
             self._hot.popitem(last=False)
 
     async def _fetch(self, kind: str, symbol: str, iv: str, start: int, end: int) -> list:
+        if kind == "hl_funding":  # one page = 200 hours = one request (Hyperliquid returns up to 500)
+            rows = await self.hl.post({"type": "fundingHistory", "coin": symbol, "startTime": start, "endTime": end}, 30)
+            pts: dict[int, float] = {}
+            for r in rows or []:
+                try:
+                    ts = int(r["time"]) // HOUR * HOUR   # payments are stamped a few ms after the hour
+                    if start <= ts <= end:
+                        pts[ts] = float(r["fundingRate"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+            return [[ts, pts[ts]] for ts in sorted(pts)]
         points: dict[int, float] = {}
         cur_end = end
         for _ in range(8):  # funding every 1 h needs 8 requests for one 1600 h page; 8 h funding needs one
@@ -250,6 +295,60 @@ class LiqRecorder:
                 backoff = min(backoff * 2, 300)
 
 
+# --------------------------------------------------------- Hyperliquid open interest
+class HLOIRecorder:
+    """Every 15 minutes: open interest of every live Hyperliquid market (one request per exchange, background
+    budget). Hyperliquid has no OI history, so the panel shows what we recorded."""
+
+    def __init__(self, derivs: Derivs):
+        self.derivs = derivs
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        self._task = asyncio.create_task(self._run(), name="hl-oi")
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except BaseException:  # noqa: BLE001
+                pass
+
+    async def _run(self) -> None:
+        await asyncio.sleep(30)
+        while True:
+            try:
+                await self.record()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.info("hyperliquid OI: %s", exc)
+            now = time.time() * 1000
+            await asyncio.sleep(max(5.0, (HL_OI_EVERY_MS - now % HL_OI_EVERY_MS) / 1000 + 2))
+
+    async def record(self, now_ms: int | None = None) -> int:
+        hl = self.derivs.hl
+        await hl.symbols()
+        ts = (now_ms or int(time.time() * 1000)) // HL_OI_EVERY_MS * HL_OI_EVERY_MS
+        rows: list[tuple[str, int, float]] = []
+        for dex in hl.dexes():
+            ctxs = await hl.contexts(dex, 0, background=True)
+            for coin, c in ctxs.items():
+                info = hl._all.get(coin)
+                if info is None or info.extra.get("delisted"):
+                    continue
+                try:
+                    oi = float(c.get("openInterest"))
+                except (TypeError, ValueError):
+                    continue
+                if oi > 0:
+                    rows.append((coin, ts, oi))
+        if rows:
+            await asyncio.to_thread(self.derivs.store.add_hl_oi, rows)
+        return len(rows)
+
+
 # ------------------------------------------------------------------------- API
 router = APIRouter()
 _rate = limits.RateLimiter(2, 20)
@@ -276,15 +375,16 @@ def _release(ip: str) -> None:
         _running.release()
 
 
-def _derivs(request: Request, id: str) -> tuple[Derivs, str]:
+def _derivs(request: Request, id: str) -> tuple[Derivs, str, str]:
     d: Derivs | None = getattr(request.app.state, "derivs", None)
     market, _, sym = id.partition(":")
-    if d is None or market != "bybit" or not sym:
-        raise HTTPException(400, "available for Bybit perpetuals only")
+    ok = d is not None and sym and ((market == "bybit" and d.provider is not None) or (market == "hl" and d.hl is not None))
+    if not ok:
+        raise HTTPException(400, "available for perpetuals only")
     ip = request.scope.get("state", {}).get("client_ip", "unknown")
     if not _rate.allow(ip):
         raise HTTPException(429, "too many requests, slow down")
-    return d, sym
+    return d, market, sym
 
 
 def _range(start: int, end: int) -> None:
@@ -298,15 +398,35 @@ async def derivs(request: Request, kind: str, id: str = Query(..., max_length=64
     if interval not in INTERVALS:
         raise HTTPException(400, "unknown interval")
     _range(start, end)
-    d, sym = _derivs(request, id)
+    d, market, sym = _derivs(request, id)
     if kind not in ("oi", "funding", "liq"):
         raise HTTPException(404)
     ip = request.scope.get("state", {}).get("client_ip", "unknown")
     await _admit(ip)
     try:
+        if market == "hl":
+            return await _answer_hl(d, kind, sym, interval, start, end)
         return await _answer(d, kind, sym, interval, start, end)
     finally:
         _release(ip)
+
+
+async def _answer_hl(d: Derivs, kind: str, sym: str, interval: str, start: int, end: int) -> dict:
+    if kind == "liq":
+        return {"points": [], "covered_from": start, "exhausted": True, "unavailable": "source"}
+    if kind == "oi":
+        bucket = min(INTERVALS[interval].ms, DAY)
+        start = max(start, end - 5000 * bucket)
+        pts = await asyncio.to_thread(d.store.hl_oi, sym, start, end, bucket)
+        first = await asyncio.to_thread(d.store.hl_oi_first, sym)
+        return {"points": pts, "covered_from": start, "exhausted": first is None or start <= first}
+    try:
+        return await d.series("hl_funding", sym, "funding", start, end, limits.profile().derivs_pages)
+    except limits.Busy as exc:
+        raise HTTPException(503, "data source is busy, try again in a moment") from exc
+    except Exception as exc:  # noqa: BLE001
+        log.info("derivs hl funding %s: %s", sym, exc)
+        raise HTTPException(502, "data source error") from exc
 
 
 async def _answer(d: Derivs, kind: str, sym: str, interval: str, start: int, end: int) -> dict:

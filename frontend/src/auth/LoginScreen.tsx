@@ -68,7 +68,7 @@ export function LoginScreen() {
           <div className="mb-8 flex flex-col items-center text-center">
             <Logo className="mb-4 h-12 w-12 text-text" />
             <h1 className="text-[22px] font-semibold leading-7">FibTrader View</h1>
-            <p className="mt-1.5 text-[14px] leading-5 text-muted">{t('Crypto charts with drawing tools. Sign in to keep your drawings and watchlists on every device.')}</p>
+            <p className="mt-1.5 text-[14px] leading-5 text-muted">{t('Charts of crypto, stocks, indices and commodities with drawing tools. Sign in to keep your drawings and watchlists on every device.')}</p>
             <p className="mt-2 text-[12px] leading-4 text-faint">{t('No limit on indicators · alerts in Telegram · funding, open interest and liquidations')}</p>
           </div>
 

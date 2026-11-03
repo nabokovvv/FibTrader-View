@@ -1,12 +1,16 @@
 # FibTrader View
 
-Free crypto charts with drawing tools — live at **[charts.fibtrader.dev](https://charts.fibtrader.dev)**.
+Free charts of crypto, stocks, indices and commodities with drawing tools — live at
+**[charts.fibtrader.dev](https://charts.fibtrader.dev)**.
 
 - Bybit perpetuals and spot, candles from 1 minute to 1 month, live updates.
+- Stocks, indices, commodities and FX as Hyperliquid perpetuals (trade.xyz and other HIP-3 exchanges): they trade
+  around the clock, so prices can differ from the exchange price. Hyperliquid serves only its newest 5000 bars, so
+  the server keeps 1h / 4h / 1D history of every market as it goes.
 - 30+ drawing tools (trend lines, Fibonacci, long/short positions, channels, waves, annotations…), saved to your
   account and shown on every interval and device.
 - **No limit on indicators**: moving averages, Bollinger, Ichimoku, SuperTrend, RSI, MACD, volume profile and more.
-- Crypto panels: funding rate, open interest, liquidations.
+- Perpetual panels: funding rate, open interest, liquidations (Bybit).
 - Price and trend-line **alerts in Telegram**.
 - Compare symbols, watchlists, saved layouts, share a chart as an image or a read-only link.
 - English and Russian.
@@ -30,7 +34,7 @@ cd frontend && npm install && npm run dev      # http://localhost:5173 (proxies 
 ```
 
 Without sign-in (`LV_AUTH=none`) the app runs for a single local user. A public setup uses
-`LV_AUTH=supabase` (Supabase Auth: email code and Google), `LV_MARKETS=bybit,bybit-spot` and the stricter limits
+`LV_AUTH=supabase` (Supabase Auth: email code and Google), `LV_MARKETS=bybit,bybit-spot,hl` and the stricter limits
 in `backend/app/limits.py`. Optional: `TELEGRAM_BOT_TOKEN` for alerts, a GitHub App for the feedback form
 (`GITHUB_APP_*`, see `backend/app/config.py`).
 

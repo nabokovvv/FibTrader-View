@@ -50,8 +50,11 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
  * Everything else, USDC perpetuals included, keeps the quiet style.
  */
 export function MarketBadge({ market, currency, highlight }: { market: string; currency?: string; highlight?: boolean }) {
-  const label: Record<string, string> = { bybit: 'PERP', 'bybit-spot': 'SPOT', us: 'US', moex: 'MOEX', yahoo: 'GLB' }
+  const label: Record<string, string> = { bybit: 'PERP', 'bybit-spot': 'SPOT', us: 'US', moex: 'MOEX', yahoo: 'GLB', hl: 'HL' }
   const quiet = 'shrink-0 rounded border border-line px-1.5 py-px text-[10px] font-medium tracking-wide text-muted'
+  if (market === 'hl') {
+    return <span className={quiet} title={t('Perpetual on Hyperliquid: trades around the clock, so its price can differ from the exchange price of the underlying.')}>HL</span>
+  }
   if (market === 'bybit' && currency === 'USDC') {
     return <span className={quiet} title={t('USDC-margined perpetual')}>USDC</span>
   }
@@ -69,7 +72,7 @@ export function MarketBadge({ market, currency, highlight }: { market: string; c
 /** Instrument name in the UI language ("BTC / USDT Perpetual" → "BTC / USDT бессрочный"). */
 export function symName(name: string | undefined): string {
   if (!name || getLang() !== 'ru') return name ?? ''
-  return name.replace(/ Perpetual$/, ' бессрочный').replace(/ Spot$/, ' спот')
+  return name.replace(/ Perpetual$/, ' бессрочный').replace(/ Perpetual \(delisted\)$/, ' бессрочный (снят с торгов)').replace(/ Spot$/, ' спот')
 }
 
 export function fmtPrice(p: number | undefined | null, precision = 2): string {

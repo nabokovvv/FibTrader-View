@@ -9,10 +9,11 @@ from .markets.base import Provider, SymbolInfo
 
 log = logging.getLogger("lv.symbols")
 
-MARKET_ORDER = ["bybit", "us", "moex", "yahoo", "bybit-spot"]
-MARKET_LABEL = {"bybit": "Bybit Perp", "bybit-spot": "Bybit Spot", "us": "US Stocks", "moex": "MOEX", "yahoo": "Global"}
-# Alias priority: earlier markets win when the same alias is declared twice.
-ALIAS_PRIORITY = ["yahoo", "moex", "us", "bybit", "bybit-spot"]
+MARKET_ORDER = ["bybit", "us", "moex", "yahoo", "hl", "bybit-spot"]
+MARKET_LABEL = {"bybit": "Bybit Perp", "bybit-spot": "Bybit Spot", "us": "US Stocks", "moex": "MOEX", "yahoo": "Global",
+                "hl": "Hyperliquid"}
+# Alias priority: earlier markets win when the same alias is declared twice (exchange data before Hyperliquid perps).
+ALIAS_PRIORITY = ["yahoo", "moex", "us", "bybit", "bybit-spot", "hl"]
 
 
 class SymbolRegistry:
@@ -107,6 +108,9 @@ class SymbolRegistry:
                 disp = (s.display or s.symbol).upper()
                 name = s.name.upper()
                 aliases = [a.upper() for a in s.aliases]
+                if market == "hl":
+                    sym = disp  # "xyz:TSLA" is an internal name: people type TSLA
+                    aliases = [a for a in aliases if a != disp]  # its own ticker is no alias (exchange data first)
                 score = 0
                 if disp == qu and disp != sym:
                     score = 110          # the UI name of a cryptic ticker (SPX for ^GSPC) is what people type
@@ -125,6 +129,14 @@ class SymbolRegistry:
                 if score:
                     if s.market == "bybit" and not sym.endswith("USDT"):
                         score -= 15
+                    elif s.market == "hl":
+                        if s.type == "crypto":
+                            score -= 30   # crypto: the Bybit USDT perpetual comes first
+                        else:
+                            if score < 100:
+                                score -= 10   # "BTC" should not open with BTCD (dominance) before BTCUSDT
+                            if not s.extra.get("primary", True):
+                                score -= 5    # the same stock on a smaller Hyperliquid exchange
                     scored.append((score, -mi, s))
                     seen.add(s.id)
         scored.sort(key=lambda t: (-t[0], -t[1], t[2].symbol))

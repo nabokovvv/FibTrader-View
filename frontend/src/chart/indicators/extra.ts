@@ -12,7 +12,7 @@ import { live } from '../live'
  * older history) and asks for another calc while older history is still being filled in.
  * ---------------------------------------------------------------------------------------------------------- */
 type Kind = 'funding' | 'oi' | 'liq'
-type Status = 'interval' | 'not-recorded' | 'perp-only' | 'error' | undefined
+type Status = 'interval' | 'not-recorded' | 'perp-only' | 'source' | 'error' | undefined
 interface Entry {
   points: number[][]; coveredFrom: number; exhausted: boolean; status: Status
   ok: boolean            // one successful answer seen (the coverage cursor is valid)
@@ -60,7 +60,7 @@ async function ensure(kind: Kind, id: string, iv: Interval, from: number, indica
       if (!older) e.fetchedAt = Date.now()
       e.ok = true
       e.backoff = 15_000
-      e.status = r.unavailable ? 'interval' : kind === 'liq' && r.recorded === false ? 'not-recorded' : undefined
+      e.status = r.unavailable === 'interval' ? 'interval' : r.unavailable ? 'source' : kind === 'liq' && r.recorded === false ? 'not-recorded' : undefined
       // more history is still missing and this answer made progress: ask again shortly
       if (from < e.coveredFrom && !e.exhausted && e.coveredFrom < before) window.setTimeout(() => recalc(indicatorId), 1200)
     } catch {
@@ -101,13 +101,14 @@ function sums(d: KLineData[], pts: number[][], cols: number[]): number[][] {
 function context(): { id: string; iv: Interval; perp: boolean } | null {
   const st = useStore.getState()
   if (!st.symbol) return null
-  return { id: st.symbol.id, iv: st.interval, perp: st.symbol.market === 'bybit' }
+  return { id: st.symbol.id, iv: st.interval, perp: st.symbol.market === 'bybit' || st.symbol.market === 'hl' }
 }
 
 const statusText: Record<Exclude<Status, undefined>, string> = {
   interval: 'Open interest is available from the 5m interval.',
   'not-recorded': 'Liquidations are recorded for the top 50 coins by turnover.',
-  'perp-only': 'Available for Bybit perpetuals only.',
+  'perp-only': 'Available for perpetuals only.',
+  source: 'This exchange does not publish liquidations.',
   error: 'No data right now.',
 }
 const lastStatus = new Map<string, Status>()  // indicator id → status shown in its legend

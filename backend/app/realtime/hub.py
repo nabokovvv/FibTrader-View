@@ -24,6 +24,7 @@ from ..markets.base import Bar, Provider, Quote
 from ..symbols import SymbolRegistry
 from ..markets.bybit import INTERVAL_MAP
 from .bybit_ws import BybitStream
+from .hl_ws import HLStream
 
 log = logging.getLogger("lv.hub")
 
@@ -72,6 +73,11 @@ class Hub:
             "bybit": BybitStream("linear", self._on_bybit_bar, self._on_quotes, **kw),
             "bybit-spot": BybitStream("spot", self._on_bybit_bar, self._on_quotes, **kw),
         }
+        # push streams for chart bars (quotes of Hyperliquid are polled: one request covers a whole exchange)
+        self._bar_streams: dict = dict(self._bybit)
+        if "hl" in providers:
+            self._bar_streams["hl"] = HLStream(self._on_bybit_bar, max_topics=self.lim.upstream_topics,
+                                               cmd_rate=self.lim.upstream_cmd_rate, cmd_burst=self.lim.upstream_cmd_burst)
 
     async def start(self) -> None:
         pass
@@ -79,7 +85,7 @@ class Hub:
     async def stop(self) -> None:
         for t in list(self._bar_tasks.values()) + list(self._quote_tasks.values()):
             t.cancel()
-        for s in self._bybit.values():
+        for s in self._bar_streams.values():
             await s.stop()
 
     # ---------------------------------------------------------------- clients
@@ -214,7 +220,7 @@ class Hub:
         client.bars.add(key)
         if not first:
             return
-        stream = self._bybit.get(info.market)
+        stream = self._bar_streams.get(info.market)
         if stream is not None and interval in self.providers[info.market].native_intervals:
             if not await stream.subscribe(stream.kline_topic(info.symbol, interval)):
                 self._drop_bar_ref(client, key)
@@ -246,7 +252,7 @@ class Hub:
         info = await self.symbols.get(sid)
         if info is None:
             return
-        stream = self._bybit.get(info.market)
+        stream = self._bar_streams.get(info.market)
         if stream is not None and interval in self.providers[info.market].native_intervals:
             await stream.unsubscribe(stream.kline_topic(info.symbol, interval))
 
@@ -396,4 +402,5 @@ class Hub:
             "bar_streams": [f"{k[0]}@{k[1]}" for k in self._bar_refs],
             "quote_subs": len(self._quote_refs),
             "bybit": {m: s.connected for m, s in self._bybit.items()},
+            "streams": {m: s.connected for m, s in self._bar_streams.items()},
         }

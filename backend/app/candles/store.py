@@ -152,6 +152,13 @@ class MarketStore:
             self._conn.execute("VACUUM")
             return True
 
+    def bounds(self, symbol: str, interval: str) -> tuple[int, int] | tuple[None, None]:
+        """Oldest and newest stored bar."""
+        with self._lock:
+            r = self._conn.execute("SELECT MIN(ts), MAX(ts) FROM bars WHERE symbol=? AND interval=?",
+                                   (symbol, interval)).fetchone()
+        return (r[0], r[1]) if r and r[0] is not None else (None, None)
+
     def count(self, symbol: str, interval: str) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM bars WHERE symbol=? AND interval=?",

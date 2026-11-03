@@ -28,7 +28,8 @@ ALPACA_FEED = os.getenv("ALPACA_FEED", "iex")
 DEFAULT_TIMEZONE = os.getenv("LV_TIMEZONE", "Europe/Nicosia")
 
 # Markets to serve, comma separated; empty = every market that is configured.
-# The public instance runs with LV_MARKETS=bybit,bybit-spot (stock/index data may not be redistributed).
+# The public instance runs with LV_MARKETS=bybit,bybit-spot,hl: no exchange stock/index data (it may not be
+# redistributed); stocks, indices and commodities come as Hyperliquid perpetuals ("hl").
 MARKETS = [m.strip() for m in os.getenv("LV_MARKETS", "").split(",") if m.strip()]
 
 # Auth: "none" = private instance, every request is the single local user;
@@ -48,8 +49,8 @@ MAINTENANCE = os.getenv("LV_MAINTENANCE", "1" if AUTH == "supabase" else "0").st
 PROFILE = os.getenv("LV_PROFILE", "").strip().lower()
 
 # Polling cadence (seconds) for providers without a push stream.
-POLL_BARS_S = {"us": 5, "moex": 5, "yahoo": 30}
-POLL_QUOTES_S = {"us": 10, "moex": 10, "yahoo": 60}
+POLL_BARS_S = {"us": 5, "moex": 5, "yahoo": 30, "hl": 20}   # hl: only 2h / 1W / 1M (the rest is pushed)
+POLL_QUOTES_S = {"us": 10, "moex": 10, "yahoo": 60, "hl": 5}
 
 
 def market_enabled(market: str) -> bool:
@@ -76,3 +77,6 @@ GITHUB_APP_KEY_FILE = os.getenv("GITHUB_APP_KEY_FILE", "").strip()   # PEM priva
 GITHUB_FEEDBACK_REPO = os.getenv("GITHUB_FEEDBACK_REPO", "").strip()  # owner/name
 # Liquidations recorder (Bybit WS, top coins) — on by default where Bybit perps are enabled
 LIQUIDATIONS = os.getenv("LV_LIQUIDATIONS", "1").strip() in ("1", "true", "yes")
+# Hyperliquid: keep 1h / 4h / 1D bars for good (the API serves only the newest 5000) and record open interest —
+# on by default where the "hl" market is enabled
+HL_ARCHIVE = os.getenv("LV_HL_ARCHIVE", "1").strip() in ("1", "true", "yes")

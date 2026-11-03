@@ -17,7 +17,7 @@ export function IndicatorModal({ onClose }: { onClose: () => void }) {
   const removeIndicator = useStore((s) => s.removeIndicator)
   const updateIndicator = useStore((s) => s.updateIndicator)
 
-  const perp = useStore((s) => s.symbol?.market === 'bybit')
+  const perp = useStore((s) => s.symbol?.market === 'bybit' || s.symbol?.market === 'hl')
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase()
     const derivs = serverFeatures().derivs

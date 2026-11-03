@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Daily (fv-backup-r2.timer): copy the newest user-data backup to Cloudflare R2.
-#   daily/   kept 5 days;  monthly/ (taken on the 1st) kept 35 days — everything older is deleted.
+# Nightly (fv-backup-r2.timer): ONE current copy of every database that cannot be rebuilt, in Cloudflare R2:
+#   latest/app.sqlite.zst          user data (drawings, watchlists, layouts, alerts, shared links)
+#   latest/derivs.sqlite.zst       recorded liquidations and Hyperliquid open interest
+#   latest/hl-archive.sqlite.zst   Hyperliquid 1h / 4h / 1D bars older than the API's 5000-bar window
+# Each copy is a consistent online snapshot (sqlite3 .backup) and must pass PRAGMA quick_check before it replaces
+# the copy in R2 — a damaged database never overwrites a good backup. Nothing else is kept in the bucket.
 # Credentials: /etc/fibtrader/r2.env (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET).
+# Restore: rclone copy r2:$R2_BUCKET/latest/<name>.sqlite.zst . && zstd -d <name>.sqlite.zst, stop fibtrader-view,
+# put it in place (app.sqlite in data/, the others in data/candles/), start fibtrader-view.
 set -euo pipefail
 [ -f /etc/fibtrader/r2.env ] || { logger -t fv-backup "no /etc/fibtrader/r2.env: skipped"; exit 0; }
 . /etc/fibtrader/r2.env
@@ -9,13 +15,20 @@ export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare RCLONE_CONF
   RCLONE_CONFIG_R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
   RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 fail() { fv-alert "backup failed" "$1"; exit 1; }
-src=$(ls -1t /home/ubuntu/fibtrader-view/data/backups/app-*.sqlite 2>/dev/null | head -1) || true
-[ -n "$src" ] || fail "no local backup file found"
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-name="$(basename "$src" .sqlite)"
-gzip -c "$src" > "$tmp/$name.sqlite.gz"
-rclone copyto "$tmp/$name.sqlite.gz" "r2:$R2_BUCKET/daily/$name.sqlite.gz" || fail "upload to R2 failed"
-[ "$(date -u +%d)" = "01" ] && { rclone copyto "$tmp/$name.sqlite.gz" "r2:$R2_BUCKET/monthly/$name.sqlite.gz" || fail "monthly upload failed"; }
-rclone delete --min-age 5d "r2:$R2_BUCKET/daily" || fail "pruning daily backups failed"
-rclone delete --min-age 35d "r2:$R2_BUCKET/monthly" || true
-logger -t fv-backup "uploaded $name to R2"
+DATA=/home/ubuntu/fibtrader-view/data
+tmp=$(mktemp -d /var/tmp/fv-backup.XXXXXX); trap 'rm -rf "$tmp"' EXIT
+sent=()
+for spec in "app:$DATA/app.sqlite" "derivs:$DATA/candles/derivs.sqlite" "hl-archive:$DATA/candles/hl-archive.sqlite"; do
+  name=${spec%%:*}; src=${spec#*:}
+  [ -f "$src" ] || continue
+  snap="$tmp/$name.sqlite"
+  sqlite3 "$src" ".backup '$snap'" || fail "snapshot of $name failed (the previous copy in R2 was kept)"
+  [ "$(sqlite3 "$snap" 'PRAGMA quick_check;')" = "ok" ] || fail "$name looks damaged: the previous copy in R2 was kept"
+  zstd -q -10 --rm "$snap" -o "$snap.zst" || fail "compressing $name failed"
+  rclone copyto "$snap.zst" "r2:$R2_BUCKET/latest/$name.sqlite.zst" || fail "upload of $name to R2 failed"
+  sent+=("$name=$(du -k "$snap.zst" | cut -f1)KB")
+  rm -f "$snap.zst"
+done
+[ ${#sent[@]} -gt 0 ] || fail "no database found to back up"
+rclone delete "r2:$R2_BUCKET" --exclude "latest/**" || true   # only the latest copy is kept
+logger -t fv-backup "uploaded to R2: ${sent[*]}"

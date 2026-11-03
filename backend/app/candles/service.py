@@ -54,26 +54,36 @@ class CandleService:
         self._tail: OrderedDict[str, tuple[int, int, list[Bar]]] = OrderedDict()   # key -> (fetched_at, last, bars)
         self._persist_checked = 0.0
         self._persist_ok = True
+        self._persist_archive_ok = True
         self._touched: OrderedDict[str, float] = OrderedDict()  # series -> last time we recorded an access
 
-    def can_persist(self) -> bool:
+    def can_persist(self, archive: bool = False) -> bool:
+        """Cache: under its size cap and enough free disk. Archive (bars that cannot be fetched again later): only
+        the free-disk check, and the archive files do not count against the cache cap."""
         if self.candles_dir is None:
             return True
         now = time.monotonic()
-        if now - self._persist_checked < 60:
-            return self._persist_ok
-        self._persist_checked = now
-        try:
-            free = shutil.disk_usage(self.candles_dir).free
-            used = sum(f.stat().st_size for f in self.candles_dir.glob("*.sqlite*"))
-        except OSError:
-            return self._persist_ok
-        ok = free >= self.min_free_disk and (self.cache_bytes is None or used <= self.cache_bytes)
-        if ok != self._persist_ok:
-            log.warning("candle cache %s (used %.1f GB, free %.1f GB)", "writable again" if ok else "FULL: serving without storing",
-                        used / 1024**3, free / 1024**3)
-        self._persist_ok = ok
-        return ok
+        if now - self._persist_checked >= 60:
+            self._persist_checked = now
+            try:
+                free = shutil.disk_usage(self.candles_dir).free
+                used = sum(f.stat().st_size for f in self.candles_dir.glob("*.sqlite*") if "-archive." not in f.name)
+            except OSError:
+                return self._persist_archive_ok if archive else self._persist_ok
+            ok = free >= self.min_free_disk and (self.cache_bytes is None or used <= self.cache_bytes)
+            if ok != self._persist_ok:
+                log.warning("candle cache %s (used %.1f GB, free %.1f GB)", "writable again" if ok else "FULL: serving without storing",
+                            used / 1024**3, free / 1024**3)
+            self._persist_ok = ok
+            self._persist_archive_ok = free >= min(self.min_free_disk, 1024**3)
+        return self._persist_archive_ok if archive else self._persist_ok
+
+    def store_for(self, provider: Provider, native: str):
+        """Intervals a provider archives (Hyperliquid 1h / 4h / 1D) live in '<market>-archive.sqlite': the cache
+        cleanup never touches that file, because those bars cannot be fetched again once they leave the window."""
+        if native in getattr(provider, "archive_intervals", ()):
+            return self.stores.get(f"{provider.market}-archive")
+        return self.stores.get(provider.market)
 
     def native_for(self, provider: Provider, interval: str) -> str:
         if interval in provider.native_intervals:
@@ -90,9 +100,9 @@ class CandleService:
         finally:
             _budget.reset(token)
 
-    async def _touch(self, market: str, symbol: str, native: str) -> None:
+    async def _touch(self, provider: Provider, symbol: str, native: str) -> None:
         """Remember that a chart used this series (at most every 6 h per series), for maintenance."""
-        key = f"{market}:{symbol}:{native}"
+        key = f"{provider.market}:{symbol}:{native}"
         now = time.monotonic()
         if now - self._touched.get(key, -1e9) < 6 * 3600:
             return
@@ -100,16 +110,16 @@ class CandleService:
         self._touched[key] = now
         while len(self._touched) > 20_000:
             self._touched.popitem(last=False)
-        await asyncio.to_thread(self.stores.get(market).touch, symbol, native)
+        await asyncio.to_thread(self.store_for(provider, native).touch, symbol, native)
 
     async def _get_bars(self, sym: SymbolInfo, interval: str, to_ms: int | None, limit: int) -> BarsPage:
         provider = self.providers[sym.market]
         native = self.native_for(provider, interval)
-        await self._touch(sym.market, sym.symbol, native)
+        await self._touch(provider, sym.symbol, native)
         now = now_ms()
         end = now if to_ms is None else min(to_ms - 1, now)
         span = self._span_for(sym, interval, native, limit)
-        store = self.stores.get(sym.market)
+        store = self.store_for(provider, native)
 
         # Widen the window until we have `limit` bars or the provider's history is exhausted
         # (weekends, holidays and thin instruments leave long stretches without bars).
@@ -175,7 +185,8 @@ class CandleService:
 
     async def _ensure(self, provider: Provider, symbol: str, native: str, start: int, end: int) -> list[Bar]:
         """Make sure closed bars for [start, end] are stored. Returns unclosed (live) bars fetched on the way."""
-        store = self.stores.get(provider.market)
+        store = self.store_for(provider, native)
+        archive = native in getattr(provider, "archive_intervals", ())
         now = now_ms()
         boundary = bucket_start(now, native)         # bars with ts >= boundary are not closed yet
         lag = getattr(provider, "persist_lag_ms", 0)  # e.g. Alpaca: don't persist bars younger than the SIP lag
@@ -193,7 +204,7 @@ class CandleService:
         cap = self.backfill_bars
         if cap is not None:
             start = max(start, end - cap * ivms)
-        if not self.can_persist():  # cache full: fetch just the window and hand it back without storing
+        if not self.can_persist(archive):  # cache full: fetch just the window and hand it back without storing
             return await self._fetch(provider, symbol, native, start, fetch_end)
 
         async with self._lock(f"{provider.market}:{symbol}:{native}"):
