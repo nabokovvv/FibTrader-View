@@ -1,0 +1,6 @@
+[Unit]
+Description=Copy the user-data backup to Cloudflare R2
+After=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fv-backup-r2

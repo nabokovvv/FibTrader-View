@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>.l{fill:#131722}@media (prefers-color-scheme:dark){.l{fill:#e7e9ee}}</style>
+  <rect class="l" x="2" y="10" width="12" height="44" rx="1.5"/>
+  <rect class="l" x="2" y="10" width="28" height="12" rx="1.5"/>
+  <rect class="l" x="2" y="28" width="21" height="10" rx="1.5"/>
+  <circle cx="23" cy="47.5" r="6.5" fill="#ff7a59"/>
+  <path class="l" d="M44 10 H60 L46 54 H30 Z"/>
+</svg>

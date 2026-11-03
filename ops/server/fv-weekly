@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Weekly (fv-weekly.timer): package caches, old kernels, journal size.
+set -u
+apt-get -qq clean
+DEBIAN_FRONTEND=noninteractive apt-get -qq -y autoremove --purge >/dev/null
+journalctl --vacuum-size=200M >/dev/null 2>&1
+logger -t fv-weekly "weekly cleanup done; $(df -h / | tail -1 | awk '{print $4}') free"

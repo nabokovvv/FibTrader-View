@@ -1,0 +1,16 @@
+# Python >= 3.12 (dev: 3.14 on the MacBook, prod: uv-managed 3.12 on the Mac mini)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+httpx>=0.27
+websockets>=13
+pydantic>=2.7
+python-dotenv>=1.0
+apscheduler>=3.10,<4
+numpy>=1.26
+pandas>=2.2
+yfinance>=0.2.50
+PyJWT[crypto]>=2.10,<3
+# tests
+pytest>=8
+pytest-asyncio>=0.23
+respx>=0.21

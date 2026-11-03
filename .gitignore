@@ -1,0 +1,16 @@
+# python
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# data (candles, user db, logs, backups, caches)
+data/
+.env
+# node
+frontend/node_modules/
+frontend/dist/
+# misc
+.DS_Store
+*.log
+# local secrets (tokens for setup scripts)
+.secrets/

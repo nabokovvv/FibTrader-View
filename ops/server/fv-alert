@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# fv-alert "subject" "text" — e-mail an alert through Resend (settings in /etc/fibtrader/alert.env).
+# The same subject is sent at most once per 6 hours. Without ALERT_TO it only logs.
+set -u
+SUBJ="${1:-FibTrader View alert}"; TEXT="${2:-}"
+STAMP_DIR=/var/lib/fv-alert; mkdir -p "$STAMP_DIR"
+key=$(printf '%s' "$SUBJ" | md5sum | cut -c1-12)
+if [ -f "$STAMP_DIR/$key" ] && [ $(( $(date +%s) - $(stat -c %Y "$STAMP_DIR/$key") )) -lt 21600 ]; then exit 0; fi
+touch "$STAMP_DIR/$key"
+logger -t fv-alert "$SUBJ: $TEXT"
+[ -f /etc/fibtrader/alert.env ] && . /etc/fibtrader/alert.env
+[ -n "${ALERT_TO:-}" ] && [ -n "${RESEND_API_KEY:-}" ] || exit 0
+body=$(python3 -c 'import json,sys; print(json.dumps({"from":"FibTrader View <alerts@fibtrader.dev>","to":[sys.argv[1]],"subject":"[charts.fibtrader.dev] "+sys.argv[2],"text":sys.argv[3]+"\n\nhost: "+sys.argv[4]}))' "$ALERT_TO" "$SUBJ" "$TEXT" "$(hostname)")
+curl -fsS -m 15 -X POST https://api.resend.com/emails -H "Authorization: Bearer $RESEND_API_KEY" -H "Content-Type: application/json" -d "$body" >/dev/null \
+  || logger -t fv-alert "e-mail failed for: $SUBJ"

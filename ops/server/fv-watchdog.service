@@ -1,0 +1,5 @@
+[Unit]
+Description=FibTrader View watchdog (health, tunnel, disk, memory)
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fv-watchdog

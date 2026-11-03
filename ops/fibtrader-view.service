@@ -1,0 +1,20 @@
+[Unit]
+Description=FibTrader View (public instance)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/fibtrader-view
+# settings come from /home/ubuntu/fibtrader-view/.env (LV_MARKETS, LV_AUTH, SUPABASE_*)
+ExecStart=/home/ubuntu/fibtrader-view/venv/bin/uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8100 --no-server-header --ws-max-size 16384 --ws-max-queue 4 --limit-concurrency 400 --timeout-keep-alive 5
+Restart=always
+RestartSec=3
+MemoryMax=700M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/ubuntu/fibtrader-view/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

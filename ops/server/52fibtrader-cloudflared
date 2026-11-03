@@ -1,0 +1,2 @@
+// let unattended-upgrades also update cloudflared from pkg.cloudflare.com
+Unattended-Upgrade::Origins-Pattern:: "origin=cloudflared,codename=any";

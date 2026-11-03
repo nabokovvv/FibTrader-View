@@ -1,0 +1,5 @@
+[Unit]
+Description=FibTrader View weekly system cleanup
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fv-weekly

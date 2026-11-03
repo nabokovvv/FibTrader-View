@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Every minute (fv-watchdog.timer): app health, tunnel, disk, memory. Restarts what is down and alerts.
+set -u
+S=/var/lib/fv-watchdog; mkdir -p "$S"
+if curl -fsS -m 8 http://127.0.0.1:8100/api/health >/dev/null; then
+  echo 0 > "$S/fails"
+else
+  n=$(( $(cat "$S/fails" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$S/fails"
+  if [ "$n" -ge 3 ]; then
+    systemctl restart fibtrader-view; echo 0 > "$S/fails"
+    fv-alert "app restarted" "The health check failed 3 minutes in a row; fibtrader-view was restarted at $(date -u +%FT%TZ)."
+  fi
+fi
+if ! systemctl is-active --quiet cloudflared; then
+  systemctl restart cloudflared
+  fv-alert "tunnel restarted" "cloudflared was not running and has been restarted at $(date -u +%FT%TZ)."
+fi
+free_gb=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
+[ "$free_gb" -lt 5 ] && fv-alert "disk low" "Only ${free_gb} GB free on /. The app cleans old candles below 3 GB."
+avail_mb=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
+[ "$avail_mb" -lt 100 ] && fv-alert "memory low" "Only ${avail_mb} MB of RAM available."
+exit 0
