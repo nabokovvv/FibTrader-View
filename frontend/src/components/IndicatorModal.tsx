@@ -2,6 +2,7 @@ import { Search, X } from 'lucide-react'
 import { t } from '../i18n'
 import { useMemo, useState } from 'react'
 import { INDICATOR_CATALOG, type IndicatorMeta } from '../chart/indicators'
+import { padParams } from '../chart/indicators/levels'
 import { useStore } from '../state/store'
 import { Modal } from './ui'
 import { pluginIndicator } from '../plugins'
@@ -63,23 +64,31 @@ export function IndicatorModal({ onClose }: { onClose: () => void }) {
                   <button className="tb-btn !h-7 !min-w-7" onClick={() => removeIndicator(ind.key)} aria-label={t('Remove {name}', { name: ind.name })}><X /></button>
                 </div>
                 <PluginSettings ind={ind} />
-                {ind.calcParams && ind.calcParams.length > 0 && (
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {ind.calcParams.map((p, i) => (
-                      <input
-                        key={i} type="number" inputMode="decimal" defaultValue={p}
-                        className="h-7 w-16 rounded border border-line bg-bg px-2 text-[12px] outline-none focus:border-muted"
-                        onBlur={(e) => {
-                          const v = Math.max(-1000, Math.min(1000, Number(e.target.value)))
-                          if (!Number.isFinite(v) || v === p) return
-                          const next = [...ind.calcParams!]
-                          next[i] = v
-                          updateIndicator(ind.key, { calcParams: next })
-                        }}
-                      />
-                    ))}
-                  </div>
-                )}
+                {(() => {
+                  const meta = INDICATOR_CATALOG.find((m) => m.name === ind.name)
+                  const params = padParams(ind.calcParams, meta?.params)   // band parameters added later show their defaults
+                  if (!params?.length) return null
+                  return (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {params.map((p, i) => (
+                        <label key={i} className="flex flex-col gap-0.5">
+                          {meta?.paramNames?.[i] && <span className="text-[10px] leading-3 text-faint">{t(meta.paramNames[i])}</span>}
+                          <input
+                            type="number" inputMode="decimal" defaultValue={p}
+                            className="h-7 w-16 rounded border border-line bg-bg px-2 text-[12px] outline-none focus:border-muted"
+                            onBlur={(e) => {
+                              const v = Math.max(-1000, Math.min(1000, Number(e.target.value)))
+                              if (!Number.isFinite(v) || v === p) return
+                              const next = [...params]
+                              next[i] = v
+                              updateIndicator(ind.key, { calcParams: next })
+                            }}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  )
+                })()}
               </li>
             ))}
           </ul>

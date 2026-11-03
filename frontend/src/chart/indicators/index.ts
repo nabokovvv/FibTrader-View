@@ -4,6 +4,7 @@ import { PLUGIN_INDICATORS } from '../../plugins'
 import { COMPARE } from './compare'
 import { FUNDING, LIQ, OI, VPVR } from './extra'
 import { ALERT_LINES_TEMPLATE } from './alertLines'
+import { RSI_COLOR } from './levels'
 
 /**
  * Custom indicators missing from KLineChart's built-in set. All `calc` functions return one record per
@@ -151,7 +152,7 @@ const SUPERTREND: IndicatorTemplate<Rec, number> = {
 }
 
 const STOCH: IndicatorTemplate<Rec, number> = {
-  name: 'STOCH', shortName: 'Stoch', calcParams: [14, 3, 3], precision: 2,
+  name: 'STOCH', shortName: 'Stoch', calcParams: [14, 3, 3, 80, 20], precision: 2,
   figures: [
     { key: 'k', title: '%K: ', type: 'line' },
     { key: 'd', title: '%D: ', type: 'line' },
@@ -279,7 +280,51 @@ const HMA: IndicatorTemplate<Rec, number> = {
   },
 }
 
-export const CUSTOM_INDICATORS = [ATR, VWAP, SUPERTREND, STOCH, ICHIMOKU, PIVOTS, KELTNER, DONCHIAN, HMA]
+/** RSI as in TradingView: Wilder's smoothing (RMA), one line; params: length, upper band, lower band. */
+const RSI: IndicatorTemplate<Rec, number> = {
+  name: 'RSI', shortName: 'RSI', calcParams: [14, 70, 30], precision: 2,
+  figures: [{ key: 'rsi', title: 'RSI: ', type: 'line', styles: () => ({ color: RSI_COLOR }) }],
+  calc: (d, ind) => {
+    const n = Math.max(1, Math.round(ind.calcParams[0] ?? 14))
+    const out: Rec[] = d.map(() => ({}))
+    let up = 0
+    let dn = 0
+    for (let i = 1; i < d.length; i++) {
+      const ch = d[i].close - d[i - 1].close
+      const u = ch > 0 ? ch : 0
+      const w = ch < 0 ? -ch : 0
+      if (i <= n) {
+        up += u
+        dn += w
+        if (i < n) continue
+        up /= n
+        dn /= n
+      } else {
+        up = (up * (n - 1) + u) / n
+        dn = (dn * (n - 1) + w) / n
+      }
+      out[i] = { rsi: dn === 0 ? 100 : 100 - 100 / (1 + up / dn) }
+    }
+    return out
+  },
+}
+
+/** Williams %R, one line; params: length, upper band, lower band. */
+const WR: IndicatorTemplate<Rec, number> = {
+  name: 'WR', shortName: '%R', calcParams: [14, -20, -80], precision: 2,
+  figures: [{ key: 'wr', title: '%R: ', type: 'line' }],
+  calc: (d, ind) => {
+    const n = Math.max(1, Math.round(ind.calcParams[0] ?? 14))
+    return d.map((c, i) => {
+      if (i < n - 1) return {}
+      const hh = highest(d, i, n)
+      const ll = lowest(d, i, n)
+      return { wr: hh === ll ? -50 : ((hh - c.close) / (hh - ll)) * -100 }
+    })
+  },
+}
+
+export const CUSTOM_INDICATORS = [ATR, VWAP, SUPERTREND, STOCH, ICHIMOKU, PIVOTS, KELTNER, DONCHIAN, HMA, RSI, WR]
 // templates with their own legends / async data (registered as they are)
 const EXTRA_INDICATORS = [COMPARE, VPVR, FUNDING, OI, LIQ, ALERT_LINES_TEMPLATE] as unknown as IndicatorTemplate[]
 
@@ -308,7 +353,7 @@ export function registerCustomIndicators() {
 }
 
 /** Catalogue for the Indicators dialog: built-ins + custom, with where they are drawn by default. */
-export interface IndicatorMeta { name: string; label: string; main: boolean; params?: number[]; precision?: number; group: 'Trend' | 'Momentum' | 'Volatility' | 'Volume' | 'Levels' | 'Crypto'; options?: Record<string, unknown>; perpOnly?: boolean }
+export interface IndicatorMeta { name: string; label: string; main: boolean; params?: number[]; paramNames?: string[]; precision?: number; group: 'Trend' | 'Momentum' | 'Volatility' | 'Volume' | 'Levels' | 'Crypto'; options?: Record<string, unknown>; perpOnly?: boolean }
 export const INDICATOR_CATALOG: IndicatorMeta[] = [
   ...PLUGIN_INDICATORS.map((p) => p.meta),
   { name: 'MA', label: 'Moving Average', main: true, params: [20, 50, 200], group: 'Trend' },
@@ -330,12 +375,12 @@ export const INDICATOR_CATALOG: IndicatorMeta[] = [
   { name: 'BBI', label: 'Bull & Bear Index', main: true, params: [3, 6, 12, 24], group: 'Trend' },
   { name: 'VOL', label: 'Volume', main: false, params: [5, 10, 20], group: 'Volume' },
   { name: 'MACD', label: 'MACD', main: false, params: [12, 26, 9], precision: 2, group: 'Momentum' },
-  { name: 'RSI', label: 'RSI', main: false, params: [14], precision: 2, group: 'Momentum' },
-  { name: 'STOCH', label: 'Stochastic', main: false, params: [14, 3, 3], precision: 2, group: 'Momentum' },
-  { name: 'KDJ', label: 'KDJ', main: false, params: [9, 3, 3], precision: 2, group: 'Momentum' },
-  { name: 'CCI', label: 'CCI', main: false, params: [20], precision: 2, group: 'Momentum' },
-  { name: 'WR', label: 'Williams %R', main: false, params: [14], precision: 2, group: 'Momentum' },
-  { name: 'DMI', label: 'DMI / ADX', main: false, params: [14, 6], precision: 2, group: 'Trend' },
+  { name: 'RSI', label: 'RSI', main: false, params: [14, 70, 30], paramNames: ['Length', 'Upper', 'Lower'], precision: 2, group: 'Momentum' },
+  { name: 'STOCH', label: 'Stochastic', main: false, params: [14, 3, 3, 80, 20], paramNames: ['Length', 'Smooth K', 'Smooth D', 'Upper', 'Lower'], precision: 2, group: 'Momentum' },
+  { name: 'KDJ', label: 'KDJ', main: false, params: [9, 3, 3, 80, 20], paramNames: ['Length', 'Smooth K', 'Smooth D', 'Upper', 'Lower'], precision: 2, group: 'Momentum' },
+  { name: 'CCI', label: 'CCI', main: false, params: [20, 100, -100], paramNames: ['Length', 'Upper', 'Lower'], precision: 2, group: 'Momentum' },
+  { name: 'WR', label: 'Williams %R', main: false, params: [14, -20, -80], paramNames: ['Length', 'Upper', 'Lower'], precision: 2, group: 'Momentum' },
+  { name: 'DMI', label: 'DMI / ADX', main: false, params: [14, 6, 25], paramNames: ['Length', 'ADX', 'Level'], precision: 2, group: 'Trend' },
   { name: 'ATR', label: 'ATR', main: false, params: [14], group: 'Volatility' },
   { name: 'OBV', label: 'On Balance Volume', main: false, params: [30], precision: 0, group: 'Volume' },
   { name: 'MTM', label: 'Momentum', main: false, params: [12, 6], precision: 2, group: 'Momentum' },

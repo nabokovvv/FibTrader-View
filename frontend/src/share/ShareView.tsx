@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiError, api } from '../api/client'
 import { ws } from '../api/ws'
 import { INDICATOR_CATALOG, registerCustomIndicators } from '../chart/indicators'
+import { levelProps, padParams } from '../chart/indicators/levels'
 import { compareCreate } from '../chart/indicators/compare'
 import { live } from '../chart/live'
 import { registerCustomOverlays } from '../chart/overlays'
@@ -86,9 +87,11 @@ export function ShareView({ id }: { id: string }) {
         .map((i, n) => ({ ...i, key: `s${n}`, calcParams: Array.isArray(i.calcParams) ? i.calcParams.slice(0, 8).map((p) => Math.max(-1000, Math.min(1000, Number(p) || 0))) : undefined }))
       for (const ind of inds) {
         const create: IndicatorCreate = { id: ind.key, name: ind.name }
-        if (ind.calcParams?.length) create.calcParams = ind.calcParams
         const meta = INDICATOR_CATALOG.find((m) => m.name === ind.name)
+        const params = padParams(ind.calcParams, meta?.params)
+        if (params?.length) create.calcParams = params
         if (meta?.precision !== undefined) create.precision = meta.precision
+        Object.assign(create, levelProps(ind.name, params, meta?.params))
         if (ind.main) create.paneId = 'candle_pane'
         if (ind.name === 'CMP') Object.assign(create, compareCreate(ind, inds))
         const paneId = chart.createIndicator(create, ind.main)

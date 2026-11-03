@@ -10,6 +10,7 @@ import { PERIOD, intervalOf } from './periods'
 import { ALERT_FEATURE_ID, buildStyles } from './theme'
 import { alertMarkets, openAlertAt, useAlerts } from '../state/alerts'
 import { ALERT_LINES, ALERT_LINES_ID, type AlertLevel } from './indicators/alertLines'
+import { levelProps, overrideLevels, padParams } from './indicators/levels'
 import { replaceIndicatorExtend } from './extend'
 import { fmtPrice } from '../components/ui'
 import { Bell } from 'lucide-react'
@@ -282,9 +283,11 @@ export function ChartView() {
       const prev = created.get(ind.key)
       if (!prev) {
         const create: IndicatorCreate = { id: ind.key, name: ind.name }
-        if (ind.calcParams?.length) create.calcParams = ind.calcParams
         const meta = INDICATOR_CATALOG.find((m) => m.name === ind.name)
+        const params = padParams(ind.calcParams, meta?.params)   // layouts saved before the band parameters existed
+        if (params?.length) create.calcParams = params
         if (meta?.precision !== undefined) create.precision = meta.precision
+        Object.assign(create, levelProps(ind.name, params, meta?.params))
         if (ind.main) create.paneId = 'candle_pane'
         const plugin = pluginIndicator(ind.name)
         if (plugin?.initialExtend) create.extendData = plugin.initialExtend(ind)
@@ -293,7 +296,10 @@ export function ChartView() {
         created.set(ind.key, { name: ind.name, calcParams: ind.calcParams })
         if (paneId && !ind.main) chart.setPaneOptions({ id: paneId, minHeight: 60, height: 120 })
       } else if (JSON.stringify(prev.calcParams) !== JSON.stringify(ind.calcParams)) {
-        chart.overrideIndicator({ id: ind.key, name: ind.name, calcParams: ind.calcParams })
+        const defaults = INDICATOR_CATALOG.find((m) => m.name === ind.name)?.params
+        const params = padParams(ind.calcParams, defaults)
+        chart.overrideIndicator({ id: ind.key, name: ind.name, calcParams: params })
+        overrideLevels(chart, ind.key, ind.name, params, defaults)
         created.set(ind.key, { name: ind.name, calcParams: ind.calcParams })
       }
     }
