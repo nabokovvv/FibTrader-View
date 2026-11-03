@@ -56,6 +56,9 @@ export const RU: Record<string, string> = {
   'connecting': 'подключение',
   'closed': 'нет связи',
   'Toggle theme': 'Сменить тему',
+  'Light theme': 'Светлая тема',
+  'Dark theme': 'Тёмная тема',
+  'More': 'Ещё',
   'Account': 'Аккаунт',
   'Sign out': 'Выйти',
 

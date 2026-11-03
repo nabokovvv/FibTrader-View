@@ -363,14 +363,14 @@ class HLOIRecorder:
 # ------------------------------------------------------------------------- API
 router = APIRouter()
 _rate = limits.RateLimiter(2, 20)
-_per_ip = limits.KeyedGate(2)      # requests in flight per IP
+_per_ip = limits.KeyedGate(3)      # requests in flight per IP (one per panel: funding, OI, liquidations)
 _running: asyncio.Semaphore | None = None  # requests in flight in total (memory: each answer ≤ ~2400 points)
 
 
 async def _admit(ip: str):
     global _running
     if _running is None:
-        _running = asyncio.Semaphore(4)
+        _running = asyncio.Semaphore(6)
     if not _per_ip.enter(ip):
         raise HTTPException(429, "too many requests at once")
     try:

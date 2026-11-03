@@ -56,6 +56,8 @@
    utilities (e.g. a bare `button { padding: 0 }` silently cancels `px-4`). */
 @layer base {
 html, body, #root { height: 100%; }
+/* nothing may push the page sideways on a phone (a too-wide bar would shift the whole UI) */
+body, #root { overflow-x: clip; }
 body {
   margin: 0;
   background: var(--bg);
