@@ -34,7 +34,9 @@ export function AlertsModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => { load().catch((e: Error) => setErr(e.message)) }, [load])
 
-  const fail = (e: unknown) => setErr(e instanceof ApiError && e.status === 409 ? t('You have {n} armed alerts, the maximum. Delete or wait for some to fire.', { n: max ?? active }) : (e as Error).message)
+  const fail = (e: unknown) => setErr(e instanceof ApiError && e.status === 409
+    ? (e.detail.includes('paused') ? t('Too many paused alerts. Delete the ones you no longer need.') : t('You have {n} armed alerts, the maximum. Delete or wait for some to fire.', { n: max ?? active }))
+    : (e as Error).message)
 
   const create = async () => {
     if (!symbol) return

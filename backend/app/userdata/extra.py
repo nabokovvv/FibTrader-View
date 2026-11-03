@@ -78,9 +78,11 @@ class ExtraMixin:
             if c.execute("SELECT COUNT(*) FROM alerts WHERE user_id=? AND active=1", (uid,)).fetchone()[0] >= max_active:
                 raise LimitError(409, f"alert limit reached ({max_active} active)")
             total = c.execute("SELECT COUNT(*) FROM alerts WHERE user_id=?", (uid,)).fetchone()[0]
-            if total >= max_total:  # make room by forgetting the oldest fired alerts
+            if total >= max_total:  # make room by forgetting the oldest FIRED alerts (paused ones are the user's)
                 c.execute("DELETE FROM alerts WHERE id IN (SELECT id FROM alerts WHERE user_id=? AND active=0 "
-                          "ORDER BY fired_at LIMIT ?)", (uid, total - max_total + 1))
+                          "AND fired_at IS NOT NULL ORDER BY fired_at LIMIT ?)", (uid, total - max_total + 1))
+                if c.execute("SELECT COUNT(*) FROM alerts WHERE user_id=?", (uid,)).fetchone()[0] >= max_total:
+                    raise LimitError(409, f"too many paused alerts ({max_total} in total): delete some")
             cur = c.execute(
                 "INSERT INTO alerts(user_id, symbol, cond, level, line, drawing_id, note, active, created_at) "
                 "VALUES(?,?,?,?,?,?,?,1,?)",

@@ -75,7 +75,7 @@ class Profile:
     app_db_bytes: int | None   # whole user database
     # alerts, feedback, shared charts, derivatives data
     alerts_active: int         # armed alerts per account
-    alerts_total: int          # armed + fired (history) per account
+    alerts_total: int          # armed + paused + fired (history; the oldest fired make room) per account
     feedback_per_day: int
     shares: int                # shared chart links per account
     share_bytes: int
@@ -95,7 +95,7 @@ PUBLIC = Profile(
     drawing_bytes=16 * 1024, watchlists=10, watchlist_items=50,
     layouts=10, layout_bytes=256 * 1024, settings_keys=64, settings_bytes=64 * 1024, user_bytes=10 * 1024**2,
     app_db_bytes=1024**3,
-    alerts_active=20, alerts_total=60, feedback_per_day=5, shares=50, share_bytes=128 * 1024, derivs_pages=4,
+    alerts_active=50, alerts_total=150, feedback_per_day=5, shares=50, share_bytes=128 * 1024, derivs_pages=4,
 )
 PRIVATE = Profile(
     body_bytes=4 * 1024**2, body_deadline_s=60, uploads_per_ip=64, uploads_global=128, ws_handshake_rate=50,

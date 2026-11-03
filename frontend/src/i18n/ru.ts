@@ -58,6 +58,7 @@ export const RU: Record<string, string> = {
   'Toggle theme': 'Сменить тему',
   'Light theme': 'Светлая тема',
   'Add alert at {price}': 'Алерт на {price}',
+  'Too many paused alerts. Delete the ones you no longer need.': 'Слишком много алертов на паузе. Удалите ненужные.',
   'Dark theme': 'Тёмная тема',
   'More': 'Ещё',
   'Account': 'Аккаунт',

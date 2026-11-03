@@ -59,6 +59,21 @@ def test_alert_limits_and_history(tmp_path):
     assert db.alerts("other") == []
 
 
+def test_paused_alerts_are_never_dropped_to_make_room(tmp_path):
+    db = _db(tmp_path)
+    a = [db.create_alert_checked("u", "bybit:BTCUSDT", "cross", 100.0 + i, None, None, "", max_active=5, max_total=3)
+         for i in range(3)]
+    db.update_alert_checked("u", a[0]["id"], active=False, level=None, cond=None, note=None, max_active=5)  # paused
+    db.fire_alerts([(a[1]["id"], 0, 101.0)])                                                               # fired
+    db.create_alert_checked("u", "bybit:ETHUSDT", "up", 5.0, None, None, "", max_active=5, max_total=3)
+    ids = {x["id"] for x in db.alerts("u")}
+    assert a[0]["id"] in ids and a[1]["id"] not in ids        # the fired one made room, the paused one stayed
+    db.update_alert_checked("u", a[2]["id"], active=False, level=None, cond=None, note=None, max_active=5)
+    with pytest.raises(LimitError) as e:                       # only paused + armed left: no silent deletion
+        db.create_alert_checked("u", "bybit:ETHUSDT", "up", 6.0, None, None, "", max_active=5, max_total=3)
+    assert "paused" in str(e.value.detail if hasattr(e.value, "detail") else e.value)
+
+
 def test_line_alert_follows_its_drawing(tmp_path):
     db = _db(tmp_path)
     pts = [{"timestamp": 1000, "value": 10}, {"timestamp": 2000, "value": 20}]
