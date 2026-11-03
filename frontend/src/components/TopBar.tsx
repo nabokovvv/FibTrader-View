@@ -6,7 +6,7 @@ import { Logo } from './Logo'
 import { AccountButton } from '../auth/AccountButton'
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { INTERVAL_LABEL } from '../chart/periods'
-import { INTERVALS, tickerOf, type ChartType, type Interval } from '../lib/types'
+import { SHOWN_INTERVALS, tickerOf, type ChartType, type Interval } from '../lib/types'
 import { useStore } from '../state/store'
 import { fmtPrice, MarketBadge, symName } from './ui'
 
@@ -68,7 +68,7 @@ export function TopBar({ compact }: { compact: boolean }) {
         <IntervalMenu interval={interval} onPick={setInterval} />
       ) : (
         <div className="flex items-center">
-          {INTERVALS.map((iv) => (
+          {SHOWN_INTERVALS.map((iv) => (
             <button key={iv} className="tb-btn !min-w-8 !px-1.5 text-[12px]" data-active={iv === interval} onClick={() => setInterval(iv)}>{t(INTERVAL_LABEL[iv])}</button>
           ))}
         </div>
@@ -148,7 +148,7 @@ function IntervalMenu({ interval, onPick }: { interval: Interval; onPick: (iv: I
   return (
     <Menu
       button={<span className="tb-btn !px-2 text-[13px] font-semibold text-text">{t(INTERVAL_LABEL[interval])}<ChevronDown className="!h-3 !w-3" /></span>}
-      items={INTERVALS.map((iv) => ({ key: iv, label: t(iv), active: iv === interval, onClick: () => onPick(iv) }))}
+      items={SHOWN_INTERVALS.map((iv) => ({ key: iv, label: t(iv), active: iv === interval, onClick: () => onPick(iv) }))}
       grid
     />
   )

@@ -1,5 +1,7 @@
 export type Interval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '1D' | '1W' | '1M'
 export const INTERVALS: Interval[] = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1D', '1W', '1M']
+/** Offered in the UI (3m and 2h are hidden for now but still work: old layouts and shared links keep them). */
+export const SHOWN_INTERVALS: Interval[] = INTERVALS.filter((iv) => iv !== '3m' && iv !== '2h')
 
 export interface SymbolInfo {
   id: string
