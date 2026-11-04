@@ -321,9 +321,11 @@ async def spa(path: str):
     if path.startswith("api/") or path == "ws":
         raise HTTPException(404)
     candidate = _dist_file(path)
-    if candidate is not None:
+    if candidate is not None and candidate.name != "index.html":
         return FileResponse(candidate)
     index = DIST / "index.html"
     if index.exists():
-        return FileResponse(index)
+        # always revalidated: it names the current build's hashed bundles (those are cached), so a home-screen app
+        # or a returning tab picks up a new deploy instead of a stale page
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
     return JSONResponse({"detail": "frontend not built: run `npm run build` in frontend/"}, status_code=503)

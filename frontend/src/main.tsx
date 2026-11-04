@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { AuthGate } from './auth/AuthGate'
+import { watchForNewVersion } from './lib/freshVersion'
+
+watchForNewVersion()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
