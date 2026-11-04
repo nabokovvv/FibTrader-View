@@ -20,6 +20,13 @@ export function intervalOf(period: Period): Interval {
   return found ?? '1h'
 }
 
+const MIN = 60_000
+/** Bar length in ms (a month counts as 31 days: only used to spot missing bars). */
+export const INTERVAL_MS: Record<Interval, number> = {
+  '1m': MIN, '3m': 3 * MIN, '5m': 5 * MIN, '15m': 15 * MIN, '30m': 30 * MIN, '1h': 60 * MIN, '2h': 120 * MIN,
+  '4h': 240 * MIN, '1D': 1440 * MIN, '1W': 7 * 1440 * MIN, '1M': 31 * 1440 * MIN,
+}
+
 export const INTERVAL_LABEL: Record<Interval, string> = {
   '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h', '1D': 'D', '1W': 'W', '1M': 'M',
 }

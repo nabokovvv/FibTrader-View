@@ -6,7 +6,7 @@ import { getLang, t } from '../i18n'
 import { ws } from '../api/ws'
 import type { Bar, DrawingRecord, Interval, SymbolInfo } from '../lib/types'
 import { toolStyle, useStore } from '../state/store'
-import { PERIOD, intervalOf } from './periods'
+import { INTERVAL_MS, PERIOD, intervalOf } from './periods'
 import { ALERT_FEATURE_ID, buildStyles } from './theme'
 import { alertMarkets, openAlertAt, useAlerts } from '../state/alerts'
 import { ALERT_LINES, ALERT_LINES_ID, type AlertLevel } from './indicators/alertLines'
@@ -48,6 +48,9 @@ export function ChartView() {
   const chartRef = useRef<Chart | null>(null)
   const symbolRef = useRef<SymbolInfo | null>(null)
   const unsubBarRef = useRef<(() => void) | null>(null)
+  const barFeed = useRef<{ id: string; iv: Interval; push: (b: KLineData) => void } | null>(null)
+  const filling = useRef(false)
+  const gapChecked = useRef<number | null>(null)
   const createdIndicators = useRef<Map<string, { name: string; calcParams?: number[] }>>(new Map())
   const suppressRemove = useRef(false)
   const drawingId = useRef<string | null>(null)
@@ -133,7 +136,14 @@ export function ChartView() {
         const id = (sym as { id?: string }).id ?? symbolRef.current?.id
         if (!id) return
         unsubBarRef.current?.()
-        unsubBarRef.current = ws.subscribeBars(id, intervalOf(period), (bar) => {
+        const iv = intervalOf(period)
+        barFeed.current = { id, iv, push: callback }
+        unsubBarRef.current = ws.subscribeBars(id, iv, (bar) => {
+          // a live bar more than one bar after the last one we have: bars were missed (sleep, lost connection)
+          const last = chart.getDataList().at(-1)
+          // (once per last bar: on markets with sessions a jump after the close is normal and nothing is missing)
+          if (last && last.timestamp !== gapChecked.current && bar[0] > last.timestamp + 1.5 * INTERVAL_MS[iv]) { void fillGap(); return }
+          if (filling.current) return       // the catch-up below brings this bar too
           callback(toKLine(bar))
           useStore.getState().setLastBar({ ts: bar[0], open: bar[1], close: bar[4] })
         })
@@ -141,8 +151,44 @@ export function ChartView() {
       unsubscribeBar() {
         unsubBarRef.current?.()
         unsubBarRef.current = null
+        barFeed.current = null
       },
     })
+
+    /** Catch up on the bars closed while the page slept or the connection was down (the live feed only sends the
+     *  current bar). A gap longer than one page reloads the chart. */
+    async function fillGap() {
+      const feed = barFeed.current
+      const c = chartRef.current
+      const last = c?.getDataList().at(-1)
+      if (!c || !feed || !last || filling.current) return
+      filling.current = true
+      gapChecked.current = last.timestamp
+      try {
+        const res = await withRetry(() => api.bars(feed.id, feed.iv, null, 1000), () => barFeed.current !== feed)
+        if (barFeed.current !== feed || !res.bars.length) return
+        if (res.bars[0][0] > last.timestamp) { c.resetData(); return }
+        const from = c.getDataList().at(-1)?.timestamp ?? last.timestamp
+        let tail: Bar | undefined
+        for (const b of res.bars) if (b[0] >= from) { feed.push(toKLine(b)); tail = b }
+        if (tail) useStore.getState().setLastBar({ ts: tail[0], open: tail[1], close: tail[4] })
+      } catch { gapChecked.current = null /* the next live bar or wake-up tries again */ } finally {
+        filling.current = false
+      }
+    }
+    // after a reconnect, and when the page comes back after a while (a sleeping laptop / phone)
+    let wasOpen = ws.status === 'open'
+    const offStatus = ws.onStatus((s) => {
+      if (s === 'open' && !wasOpen) void fillGap()
+      wasOpen = s === 'open'
+    })
+    let hiddenAt = 0
+    const onVisible = () => {
+      if (document.visibilityState === 'hidden') { hiddenAt = Date.now(); return }
+      if (hiddenAt && Date.now() - hiddenAt > 30_000) { ws.reviveAfterSleep(); void fillGap() }
+      hiddenAt = 0
+    }
+    document.addEventListener('visibilitychange', onVisible)
 
     const ro = new ResizeObserver(() => chart.resize())
     ro.observe(el)
@@ -176,6 +222,8 @@ export function ChartView() {
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('keydown', onKey)
+      document.removeEventListener('visibilitychange', onVisible)
+      offStatus()
       ro.disconnect()
       unsubBarRef.current?.()
       dispose(el)

@@ -15,6 +15,7 @@ class WsClient {
   private quoteIds = new Set<string>()
   private retry = 1000
   private timer: number | null = null
+  private lastMsgAt = 0
   status: WsStatus = 'closed'
 
   connect() {
@@ -25,6 +26,7 @@ class WsClient {
     this.ws = ws
     ws.onopen = () => {
       this.retry = 1000
+      this.lastMsgAt = Date.now()
       this.setStatus('open')
       for (const key of this.barHandlers.keys()) {
         const [id, interval] = splitKey(key)
@@ -33,6 +35,7 @@ class WsClient {
       if (this.quoteIds.size) this.send({ op: 'set', ch: 'quotes', ids: [...this.quoteIds] })
     }
     ws.onmessage = (e) => {
+      this.lastMsgAt = Date.now()
       let msg: { ch: string; id?: string; interval?: string; bar?: Bar; closed?: boolean; q?: Record<string, Quote>; msg?: string }
       try { msg = JSON.parse(e.data) } catch { return }
       if (msg.ch === 'bars' && msg.id && msg.interval && msg.bar) {
@@ -45,6 +48,7 @@ class WsClient {
       }
     }
     ws.onclose = () => {
+      if (this.ws !== ws) return          // an old socket replaced by reviveAfterSleep()
       this.setStatus('closed')
       this.ws = null
       if (this.timer) window.clearTimeout(this.timer)
@@ -52,6 +56,22 @@ class WsClient {
       this.retry = Math.min(this.retry * 2, 15000)
     }
     ws.onerror = () => ws.close()
+  }
+
+  /** The page woke up (laptop lid, phone): a socket that has been silent may be dead without knowing it (no close
+   *  event after a sleep). Reconnect now instead of waiting for the browser to notice or for the backoff timer. */
+  reviveAfterSleep() {
+    const ws = this.ws
+    if (ws && ws.readyState === WebSocket.OPEN && Date.now() - this.lastMsgAt < 10_000) return
+    if (this.timer) { window.clearTimeout(this.timer); this.timer = null }
+    this.retry = 1000
+    if (ws) {
+      this.ws = null
+      ws.onopen = ws.onmessage = ws.onerror = null
+      try { ws.close() } catch { /* already closed */ }
+      this.setStatus('closed')
+    }
+    this.connect()
   }
 
   private send(msg: unknown) {
