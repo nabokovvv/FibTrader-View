@@ -44,6 +44,7 @@ export const RU: Record<string, string> = {
   'Chart type': 'Тип графика',
   'Candles': 'Свечи',
   'Hollow candles': 'Полые свечи',
+  'Heikin Ashi': 'Хейкен-Аши',
   'Bars': 'Бары',
   'Area': 'Область',
   'Layouts': 'Раскладки',

@@ -7,6 +7,7 @@ import { ws } from '../api/ws'
 import type { Bar, DrawingRecord, Interval, SymbolInfo } from '../lib/types'
 import { toolStyle, useStore } from '../state/store'
 import { INTERVAL_MS, PERIOD, intervalOf } from './periods'
+import { haList, haLive, isHeikinAshi } from './heikinAshi'
 import { ALERT_FEATURE_ID, buildStyles } from './theme'
 import { alertMarkets, openAlertAt, useAlerts } from '../state/alerts'
 import { ALERT_LINES, ALERT_LINES_ID, type AlertLevel } from './indicators/alertLines'
@@ -117,7 +118,8 @@ export function ChartView() {
           const res = await withRetry(() => api.bars(id, iv, type === 'forward' && timestamp ? timestamp : null, type === 'init' ? 600 : 500), stale)
           if (stale()) return
           if (type === 'init') setLoading(false)
-          callback(res.bars.map(toKLine), { forward: res.more, backward: false })
+          const list = res.bars.map(toKLine)
+          callback(isHeikinAshi(useStore.getState().chartType) ? haList(list) : list, { forward: res.more, backward: false })
           if (type === 'init') {
             const last = res.bars.at(-1)
             if (last) useStore.getState().setLastBar({ ts: last[0], open: last[1], close: last[4] })
@@ -137,14 +139,16 @@ export function ChartView() {
         if (!id) return
         unsubBarRef.current?.()
         const iv = intervalOf(period)
-        barFeed.current = { id, iv, push: callback }
+        // Heikin Ashi: every live bar is chained to the HA bars already on the chart
+        const push = (k: KLineData) => callback(isHeikinAshi(useStore.getState().chartType) ? haLive(k, chart.getDataList()) : k)
+        barFeed.current = { id, iv, push }
         unsubBarRef.current = ws.subscribeBars(id, iv, (bar) => {
           // a live bar more than one bar after the last one we have: bars were missed (sleep, lost connection)
           const last = chart.getDataList().at(-1)
           // (once per last bar: on markets with sessions a jump after the close is normal and nothing is missing)
           if (last && last.timestamp !== gapChecked.current && bar[0] > last.timestamp + 1.5 * INTERVAL_MS[iv]) { void fillGap(); return }
           if (filling.current) return       // the catch-up below brings this bar too
-          callback(toKLine(bar))
+          push(toKLine(bar))
           useStore.getState().setLastBar({ ts: bar[0], open: bar[1], close: bar[4] })
         })
       },
@@ -267,6 +271,15 @@ export function ChartView() {
   useEffect(() => {
     chartRef.current?.setStyles(buildStyles(theme, settings, chartType, alertButton))
   }, [theme, settings, chartType, alertButton])
+
+  // Heikin Ashi bars are computed from the real ones when they are loaded: switching to / from HA reloads them
+  const haShown = useRef(isHeikinAshi(chartType))
+  useEffect(() => {
+    const ha = isHeikinAshi(chartType)
+    if (ha === haShown.current) return
+    haShown.current = ha
+    chartRef.current?.resetData()
+  }, [chartType])
 
   // right click on the price chart (mouse only; phones use the crosshair bell): "Add alert at <price>"
   const [menu, setMenu] = useState<{ x: number; y: number; price: number } | null>(null)

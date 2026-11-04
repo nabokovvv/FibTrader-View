@@ -1,3 +1,4 @@
+import { realOf } from '../heikinAshi'
 import type { Chart, KLineData, OverlayFigure, OverlayTemplate, Point } from 'klinecharts'
 import { t as tr } from '../../i18n'
 import { useStore } from '../../state/store'
@@ -66,17 +67,18 @@ interface Outcome { status: 'open' | 'tp' | 'sl'; price: number; ts: number }
 
 /** Replays bars after the entry bar inside the box: first touch of target or stop (both in one bar = stop). */
 function outcome(data: KLineData[], side: 1 | -1, t: number, s: number, tsL: number, tsR: number): Outcome | null {
-  let last: KLineData | null = null
-  for (const b of data) {
-    if (b.timestamp <= tsL) continue
-    if (b.timestamp > tsR) break
-    last = b
+  let last: { close: number; ts: number } | null = null
+  for (const k of data) {
+    if (k.timestamp <= tsL) continue
+    if (k.timestamp > tsR) break
+    const b = realOf(k)   // real prices, also on a Heikin Ashi chart
+    last = { close: b.close, ts: k.timestamp }
     const hitS = side === 1 ? b.low <= s : b.high >= s
     const hitT = side === 1 ? b.high >= t : b.low <= t
-    if (hitS) return { status: 'sl', price: s, ts: b.timestamp }
-    if (hitT) return { status: 'tp', price: t, ts: b.timestamp }
+    if (hitS) return { status: 'sl', price: s, ts: k.timestamp }
+    if (hitT) return { status: 'tp', price: t, ts: k.timestamp }
   }
-  return last ? { status: 'open', price: last.close, ts: last.timestamp } : null
+  return last ? { status: 'open', price: last.close, ts: last.ts } : null
 }
 
 function makePosition(name: 'longPosition' | 'shortPosition', side: 1 | -1): OverlayTemplate<PositionConfig> {

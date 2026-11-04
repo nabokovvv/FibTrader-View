@@ -53,7 +53,7 @@ export function buildStyles(theme: Theme, settings: Settings, chartType: ChartTy
       vertical: { show: true, color: t.grid, size: 1, style: 'solid', dashedValue: [2, 2] },
     },
     candle: {
-      type: chartType,
+      type: chartType === 'heikin_ashi' ? 'candle_solid' : chartType,   // HA = solid candles over HA data
       bar: {
         compareRule: 'current_open',
         upColor: up, downColor: down, noChangeColor: flat,

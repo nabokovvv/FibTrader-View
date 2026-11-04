@@ -8,6 +8,7 @@ import { compareCreate } from '../chart/indicators/compare'
 import { live } from '../chart/live'
 import { registerCustomOverlays } from '../chart/overlays'
 import { PERIOD } from '../chart/periods'
+import { haList, haLive, isHeikinAshi } from '../chart/heikinAshi'
 import { buildStyles } from '../chart/theme'
 import { Logo } from '../components/Logo'
 import { MarketBadge } from '../components/ui'
@@ -62,19 +63,21 @@ export function ShareView({ id }: { id: string }) {
       chartMade = true
       live.chart = chart
       let scrolled = false
+      const ha = isHeikinAshi(snap.chartType)
       chart.setDataLoader({
         async getBars({ type, timestamp, callback }) {
           if (type === 'backward') { callback([], { forward: false, backward: false }); return }
           try {
             const res = await api.bars(sym.id, iv, type === 'forward' ? timestamp : null, type === 'init' ? 600 : 500)
-            callback(res.bars.map(toKLine), { forward: res.more, backward: false })
+            const list = res.bars.map(toKLine)
+            callback(ha ? haList(list) : list, { forward: res.more, backward: false })
             const to = snap.to
             if (type === 'init' && typeof to === 'number' && Number.isFinite(to) && !scrolled) { scrolled = true; window.setTimeout(() => chart.scrollToTimestamp(to, 0), 0) }
           } catch { callback([], { forward: false, backward: false }) }
         },
         subscribeBar({ callback }) {
           unsub?.()
-          unsub = ws.subscribeBars(sym.id, iv, (bar) => callback(toKLine(bar)))
+          unsub = ws.subscribeBars(sym.id, iv, (bar) => callback(ha ? haLive(toKLine(bar), chart.getDataList()) : toKLine(bar)))
         },
         unsubscribeBar() { unsub?.(); unsub = null },
       })

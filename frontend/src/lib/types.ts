@@ -50,7 +50,7 @@ export interface Watchlist {
   position: number
 }
 
-export type ChartType = 'candle_solid' | 'candle_stroke' | 'candle_up_stroke' | 'candle_down_stroke' | 'ohlc' | 'area'
+export type ChartType = 'candle_solid' | 'candle_stroke' | 'candle_up_stroke' | 'candle_down_stroke' | 'ohlc' | 'area' | 'heikin_ashi'
 
 export interface IndicatorState {
   key: string

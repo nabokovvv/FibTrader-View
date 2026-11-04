@@ -14,6 +14,7 @@ const CHART_TYPES: Array<{ type: ChartType; label: string; Icon: typeof ChartCan
   { type: 'candle_solid', label: 'Candles', Icon: ChartCandlestick },
   { type: 'candle_stroke', label: 'Hollow candles', Icon: ChartCandlestick },
   { type: 'ohlc', label: 'Bars', Icon: ChartNoAxesColumn },
+  { type: 'heikin_ashi', label: 'Heikin Ashi', Icon: ChartCandlestick },
   { type: 'area', label: 'Area', Icon: ChartArea },
 ]
 
