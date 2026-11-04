@@ -98,7 +98,7 @@ async def _verify(token: str) -> str:
     if key is None:
         raise jwt.InvalidTokenError("unknown signing key")
     claims = jwt.decode(
-        token, key, algorithms=ALGS, audience="authenticated",
+        token, key, algorithms=ALGS, audience="authenticated", leeway=30,  # clock skew between Supabase and us
         issuer=f"{config.SUPABASE_URL}/auth/v1", options={"require": ["exp", "sub", "iss", "aud"]},
     )
     if claims.get("is_anonymous"):

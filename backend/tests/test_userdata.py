@@ -116,7 +116,7 @@ async def test_valid_token(supabase):
 
 
 @pytest.mark.parametrize("over", [
-    {"exp": int(time.time()) - 10},            # expired
+    {"exp": int(time.time()) - 120},           # expired (beyond the 30 s clock-skew leeway)
     {"aud": "anon"},                           # wrong audience
     {"iss": "https://evil.example/auth/v1"},   # other project
     {"is_anonymous": True},                    # anonymous sign-in

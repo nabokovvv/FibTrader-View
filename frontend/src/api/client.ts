@@ -1,4 +1,4 @@
-import { accessToken, sessionRejected } from '../auth/session'
+import { accessToken, refreshAfterReject, sessionRejected } from '../auth/session'
 import { getLang, t } from '../i18n'
 import type { BarsResponse, DrawingRecord, Interval, SymbolInfo, Watchlist } from '../lib/types'
 
@@ -24,12 +24,19 @@ const FRIENDLY: Record<number, string> = {
 }
 
 export async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const token = await accessToken()
-  const r = await fetch(url, {
+  const send = (token: string | null) => fetch(url, {
     ...init,
     headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(init?.headers ?? {}) },
   })
-  if (r.status === 401 && token) sessionRejected()
+  const token = await accessToken()
+  let r = await send(token)
+  if (r.status === 401 && token) {
+    // an access token can expire in flight (or after a sleep): get a fresh one once, sign out only if that fails
+    // (a fresh token refused again is a server-side problem, e.g. signing keys not loaded: signing out would not help)
+    const fresh = await refreshAfterReject(token)
+    if (fresh === null) sessionRejected()
+    else if (fresh !== token) r = await send(fresh)
+  }
   if (!r.ok) {
     let detail = r.statusText
     try { detail = (await r.json()).detail ?? detail } catch { /* ignore */ }

@@ -128,7 +128,30 @@ export async function signOut(): Promise<void> {
   await need().auth.signOut()
 }
 
-/** The API answered 401: the session is gone (revoked, expired refresh) — drop it locally. */
+let refreshing: Promise<string | null> | null = null
+/** The API refused `rejected`: ask Supabase for a new access token (one request shared by all callers). Returns the
+ *  new token, or null when the session is really gone (revoked, refresh token expired). A network failure is not a
+ *  rejection: then the old token comes back and the caller does not sign the user out. */
+export async function refreshAfterReject(rejected: string): Promise<string | null> {
+  if (!client) return null
+  if (token && token !== rejected) return token          // someone already refreshed meanwhile
+  refreshing ??= (async () => {
+    try {
+      const { data, error } = await client!.auth.refreshSession()
+      if (data.session) return (token = data.session.access_token)
+      // only an auth refusal means the session is gone; network errors, 429 and 5xx keep it
+      const status = (error as { status?: number } | null)?.status ?? 0
+      return [400, 401, 403, 404].includes(status) ? null : rejected
+    } catch {
+      return rejected
+    } finally {
+      window.setTimeout(() => { refreshing = null }, 0)
+    }
+  })()
+  return refreshing
+}
+
+/** Supabase refused to refresh the session (revoked, refresh token expired): drop it locally. */
 export function sessionRejected() {
   onSignedOut?.()
 }
