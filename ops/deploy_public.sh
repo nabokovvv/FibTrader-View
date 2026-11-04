@@ -21,7 +21,7 @@ EXCLUDE="$ROOT/ops/public-exclude.txt"; PATTERNS="$ROOT/ops/leak-patterns.txt"
 if [ -f "$EXCLUDE" ]; then grep -v '^\s*#' "$EXCLUDE" | grep -v '^\s*$' | while read -r p; do rm -rf "${BUILD:?}/$p"; done; fi
 
 ln -s "$ROOT/frontend/node_modules" "$BUILD/frontend/node_modules"
-(cd "$BUILD/frontend" && npx tsc -b && npx vite build --logLevel warn)
+(cd "$BUILD/frontend" && node scripts/patch-klinecharts.mjs && npx tsc -b && npx vite build --logLevel warn)
 rm "$BUILD/frontend/node_modules"
 
 if [ -f "$PATTERNS" ] && grep -rIliF -f <(grep -v '^\s*#' "$PATTERNS" | grep -v '^\s*$') "$BUILD/backend" "$BUILD/frontend/dist" "$BUILD/frontend/src" 2>/dev/null; then

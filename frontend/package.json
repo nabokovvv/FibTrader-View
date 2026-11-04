@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node scripts/patch-klinecharts.mjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "postinstall": "node scripts/patch-klinecharts.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.118.0",
