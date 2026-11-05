@@ -27,6 +27,14 @@ export const INTERVAL_MS: Record<Interval, number> = {
   '4h': 240 * MIN, '1D': 1440 * MIN, '1W': 7 * 1440 * MIN, '1M': 31 * 1440 * MIN,
 }
 
+/** When a bar of interval `iv` opened at `ts` closes (months by the calendar, in the bar's own time zone offset). */
+export function barEnd(ts: number, iv: Interval): number {
+  if (iv !== '1M') return ts + INTERVAL_MS[iv]
+  const d = new Date(ts + 15 * 1440 * MIN)    // safely inside the bar's month whatever the exchange's offset
+  const y = d.getUTCFullYear(), m = d.getUTCMonth()
+  return Date.UTC(y, m + 1, 1) + (ts - Date.UTC(y, m, 1))
+}
+
 export const INTERVAL_LABEL: Record<Interval, string> = {
   '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h', '1D': 'D', '1W': 'W', '1M': 'M',
 }

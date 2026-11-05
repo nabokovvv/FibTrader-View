@@ -21,6 +21,7 @@ import { POSITION_TOOLS, completePosition, positionDefaults } from './overlays/p
 import { INDICATOR_CATALOG, registerCustomIndicators } from './indicators'
 import { compareCreate, useCompareRebase } from './indicators/compare'
 import { live } from './live'
+import { replayActive, replayAttach, replayCut, replayDetach, replayTo, useReplay } from './replay'
 import { PLUGIN_HOOKS, pluginIndicator } from '../plugins'
 
 registerCustomOverlays()
@@ -52,6 +53,7 @@ export function ChartView() {
   const barFeed = useRef<{ id: string; iv: Interval; push: (b: KLineData) => void } | null>(null)
   const filling = useRef(false)
   const gapChecked = useRef<number | null>(null)
+  const initSeq = useRef(0)
   const createdIndicators = useRef<Map<string, { name: string; calcParams?: number[] }>>(new Map())
   const suppressRemove = useRef(false)
   const drawingId = useRef<string | null>(null)
@@ -75,6 +77,7 @@ export function ChartView() {
   const indicators = useStore((s) => s.indicators)
   const tool = useStore((s) => s.tool)
   const magnet = useStore((s) => s.magnet)
+  const replaying = useReplay((s) => s.end !== null)
 
   // ------------------------------------------------------------- lifecycle
   useEffect(() => {
@@ -92,6 +95,7 @@ export function ChartView() {
     chartRef.current = chart
     chartHolder.chart = chart
     live.chart = chart
+    live.el = el
     createdIndicators.current.clear()
     ;(window as unknown as { __lvChart?: Chart }).__lvChart = chart
     chartHolder.suppressRemove = () => { suppressRemove.current = true }
@@ -110,18 +114,26 @@ export function ChartView() {
       async getBars({ type, timestamp, symbol: sym, period, callback }) {
         const id = (sym as { id?: string }).id ?? symbolRef.current?.id
         const iv = intervalOf(period) as Interval
-        if (!id || type === 'backward') { callback([], { forward: false, backward: false }); return }
+        // 'backward' = newer bars (the live feed brings those); 'forward' without a first bar has no anchor (an
+        // empty chart): asking for the newest page there would show the present in the middle of a replay
+        if (!id || type === 'backward' || (type === 'forward' && !timestamp)) { callback([], { forward: false, backward: false }); return }
         if (type === 'init') setLoading(true)
-        // KLineChart does not drop answers for a symbol/period it already left: ignore them ourselves
-        const stale = () => symbolRef.current?.id !== id || intervalOf(chartRef.current?.getPeriod() ?? period) !== iv
+        // KLineChart does not drop answers for a symbol/period it already left (or a load a replay start / exit
+        // replaced): ignore them ourselves
+        const seq = type === 'init' ? ++initSeq.current : initSeq.current
+        const stale = () => symbolRef.current?.id !== id || intervalOf(chartRef.current?.getPeriod() ?? period) !== iv || initSeq.current !== seq
+        // bar replay: the first page ends at the replay's "now" instead of the present
+        const replayTo_ = type === 'init' ? replayTo() : null
         try {
-          const res = await withRetry(() => api.bars(id, iv, type === 'forward' && timestamp ? timestamp : null, type === 'init' ? 600 : 500), stale)
+          const to = replayTo_ ?? (type === 'forward' ? timestamp : null)
+          const res = await withRetry(() => api.bars(id, iv, to, type === 'init' ? 600 : 500), stale)
           if (stale()) return
           if (type === 'init') setLoading(false)
-          const list = res.bars.map(toKLine)
+          const bars = replayTo_ !== null ? replayCut(id, iv, res.bars) : res.bars
+          const list = bars.map(toKLine)
           callback(isHeikinAshi(useStore.getState().chartType) ? haList(list) : list, { forward: res.more, backward: false })
           if (type === 'init') {
-            const last = res.bars.at(-1)
+            const last = bars.at(-1)
             if (last) useStore.getState().setLastBar({ ts: last[0], open: last[1], close: last[4] })
           }
         } catch (e) {
@@ -138,9 +150,16 @@ export function ChartView() {
         const id = (sym as { id?: string }).id ?? symbolRef.current?.id
         if (!id) return
         unsubBarRef.current?.()
+        unsubBarRef.current = null
         const iv = intervalOf(period)
         // Heikin Ashi: every live bar is chained to the HA bars already on the chart
         const push = (k: KLineData) => callback(isHeikinAshi(useStore.getState().chartType) ? haLive(k, chart.getDataList()) : k)
+        if (replayActive()) {
+          // bar replay: the next bars come from the replay, not from the live feed
+          barFeed.current = null
+          replayAttach({ id, iv, push })
+          return
+        }
         barFeed.current = { id, iv, push }
         unsubBarRef.current = ws.subscribeBars(id, iv, (bar) => {
           // a live bar more than one bar after the last one we have: bars were missed (sleep, lost connection)
@@ -156,6 +175,7 @@ export function ChartView() {
         unsubBarRef.current?.()
         unsubBarRef.current = null
         barFeed.current = null
+        replayDetach()
       },
     })
 
@@ -231,9 +251,11 @@ export function ChartView() {
       ro.disconnect()
       unsubBarRef.current?.()
       dispose(el)
+      replayDetach()
       chartRef.current = null
       chartHolder.chart = null
       live.chart = null
+      live.el = null
     }
   }, [])
 
@@ -526,7 +548,8 @@ export function ChartView() {
       )}
       {loading && (
         // previous symbol's candles stay in the canvas until the new ones arrive: cover them
-        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center" style={{ background: 'color-mix(in srgb, var(--bg) 82%, transparent)' }}>
+        // (during a replay fully, and the chart cannot be panned under it: no bars after the new start may show)
+        <div className={`${replaying ? 'pointer-events-auto' : 'pointer-events-none'} absolute inset-0 z-20 flex items-center justify-center`} style={{ background: replaying ? 'var(--bg)' : 'color-mix(in srgb, var(--bg) 82%, transparent)' }}>
           <span className="flex items-center gap-2 rounded-md border border-line bg-panel px-3 py-1.5 text-[12px] text-muted">
             <span className="pulse inline-block h-1.5 w-1.5 rounded-full" style={{ background: 'var(--warn)' }} />
             {t('Loading {what}', { what: `${symbol ? (symbol.display || symbol.symbol) : ''} · ${t(interval)}` })}

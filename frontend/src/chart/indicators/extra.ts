@@ -5,6 +5,7 @@ import type { Interval } from '../../lib/types'
 import { useStore } from '../../state/store'
 import { hexAlpha } from '../theme'
 import { live } from '../live'
+import { barEnd } from '../periods'
 
 /* ------------------------------------------------------------------------------------------------------------
  * Crypto panels (Bybit perpetuals): funding rate, open interest, liquidations. Data comes from /api/derivs,
@@ -73,13 +74,16 @@ async function ensure(kind: Kind, id: string, iv: Interval, from: number, indica
   return e
 }
 
+/** Where the last bar ends: nothing after it belongs on the chart (a bar replay stops in the past). */
+const lastEnd = (d: KLineData[]) => barEnd(d[d.length - 1].timestamp, useStore.getState().interval)
+
 /** Last value at or before each bar's end (step line / bars), from point column `col`. */
 function forward(d: KLineData[], pts: number[][], col: number, scale = 1): Array<number | undefined> {
   const out: Array<number | undefined> = new Array(d.length)
   let j = 0
   let last: number | undefined
   for (let i = 0; i < d.length; i++) {
-    const end = i + 1 < d.length ? d[i + 1].timestamp : Infinity
+    const end = i + 1 < d.length ? d[i + 1].timestamp : lastEnd(d)
     while (j < pts.length && pts[j][0] < end) { last = pts[j][col] * scale; j++ }
     out[i] = last
   }
@@ -91,7 +95,7 @@ function sums(d: KLineData[], pts: number[][], cols: number[]): number[][] {
   const out = d.map(() => cols.map(() => 0))
   let j = 0
   for (let i = 0; i < d.length; i++) {
-    const end = i + 1 < d.length ? d[i + 1].timestamp : Infinity
+    const end = i + 1 < d.length ? d[i + 1].timestamp : lastEnd(d)
     while (j < pts.length && pts[j][0] < d[i].timestamp) j++
     while (j < pts.length && pts[j][0] < end) { cols.forEach((c, k) => { out[i][k] += pts[j][c] }); j++ }
   }

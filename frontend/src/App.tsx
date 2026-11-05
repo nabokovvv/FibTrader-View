@@ -19,6 +19,7 @@ import { AlertsModal } from './components/AlertsModal'
 import { ShareModal } from './components/ShareModal'
 import { DonateModal } from './components/DonateModal'
 import { FeedbackModal } from './components/FeedbackModal'
+import { ReplayBar } from './components/ReplayBar'
 
 function useViewport() {
   const get = () => (window.innerWidth < 760 ? 'phone' : window.innerWidth < 1100 ? 'tablet' : 'desktop') as 'phone' | 'tablet' | 'desktop'
@@ -90,6 +91,7 @@ export default function App() {
           {ready ? <ChartView /> : <div className="flex h-full items-center justify-center text-muted">{t('Loading…')}</div>}
           <SelectionToolbar />
           <ToolOptionsBar />
+          {ready && <ReplayBar />}
           {watchlistOverlay && (
             <div className="sheet absolute inset-y-0 right-0 z-20 w-[300px]"><Watchlist onAdd={openAdd} /></div>
           )}

@@ -1,4 +1,4 @@
-import { Bell, ChartArea, ChartCandlestick, ChartLine, ChartNoAxesColumn, ChevronDown, Ellipsis, GitCompareArrows, LayoutGrid, Moon, PanelRight, Search, Settings, Share2, SlidersHorizontal, Sun } from 'lucide-react'
+import { Bell, ChartArea, ChartCandlestick, ChartLine, ChartNoAxesColumn, ChevronDown, Ellipsis, GitCompareArrows, LayoutGrid, Moon, PanelRight, Rewind, Search, Settings, Share2, SlidersHorizontal, Sun } from 'lucide-react'
 import { alertMarkets, useAlerts } from '../state/alerts'
 import { serverFeatures } from '../auth/session'
 import { t } from '../i18n'
@@ -8,6 +8,7 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { INTERVAL_LABEL } from '../chart/periods'
 import { SHOWN_INTERVALS, tickerOf, type ChartType, type Interval } from '../lib/types'
 import { useStore } from '../state/store'
+import { replayCancelPick, replayExit, replayPick, useReplay } from '../chart/replay'
 import { fmtPrice, MarketBadge, symName } from './ui'
 
 const CHART_TYPES: Array<{ type: ChartType; label: string; Icon: typeof ChartCandlestick }> = [
@@ -38,12 +39,16 @@ export function TopBar({ compact }: { compact: boolean }) {
   const deleteLayout = useStore((s) => s.deleteLayout)
 
   const armed = useAlerts((s) => s.alerts.filter((a) => a.active).length)
-  const price = quote?.p ?? lastBar?.close
+  const replaying = useReplay((s) => s.end !== null)
+  const picking = useReplay((s) => s.picking)
+  const toggleReplay = () => (replaying ? replayExit() : picking ? replayCancelPick() : replayPick())
+  // during a replay the price is the replay's, not today's
+  const price = replaying ? lastBar?.close : quote?.p ?? lastBar?.close
   const dirUp = lastBar ? lastBar.close >= lastBar.open : true
   const ChartIcon = CHART_TYPES.find((c) => c.type === chartType)?.Icon ?? ChartLine
 
   // browser tab title like TradingView: "CAKEUSDT 1.869 ▲" (arrow = 24 h change, else the current bar)
-  const titleUp = quote?.ch != null ? quote.ch >= 0 : dirUp
+  const titleUp = quote?.ch != null && !replaying ? quote.ch >= 0 : dirUp
   useEffect(() => {
     document.title = symbol && price !== undefined
       ? `${tickerOf(symbol)} ${fmtPrice(price, symbol.price_precision)} ${titleUp ? '▲' : '▼'}`
@@ -68,7 +73,7 @@ export function TopBar({ compact }: { compact: boolean }) {
       {price !== undefined && (
         <span className={`ml-1 text-[14px] font-semibold ${dirUp ? 'num-up' : 'num-down'}`}>{fmtPrice(price, symbol?.price_precision)}</span>
       )}
-      {quote?.ch !== undefined && quote?.ch !== null && !compact && (
+      {quote?.ch !== undefined && quote?.ch !== null && !compact && !replaying && (
         <span className={`text-[12px] ${quote.ch >= 0 ? 'num-up' : 'num-down'}`}>{quote.ch >= 0 ? '+' : ''}{quote.ch.toFixed(2)}%</span>
       )}
 
@@ -104,6 +109,11 @@ export function TopBar({ compact }: { compact: boolean }) {
           <GitCompareArrows />
         </button>
       )}
+      {!compact && (
+        <button className="tb-btn" data-active={replaying || picking} onClick={toggleReplay} title={t(replaying ? 'Exit replay (back to live)' : 'Bar replay')}>
+          <Rewind /><span className="hidden text-[12px] xl:inline">{t('Replay')}</span>
+        </button>
+      )}
       {alertMarkets().length > 0 && (
         <button className="tb-btn relative" onClick={() => { useAlerts.getState().setDraft(null); setSheet('alerts') }} title={t('Alerts')}>
           <Bell />{armed > 0 && <span className="absolute right-0.5 top-0.5 min-w-3.5 rounded-full px-0.5 text-center text-[9px] font-semibold leading-3.5" style={{ background: 'var(--brand)', color: '#fff' }}>{armed}</span>}
@@ -125,10 +135,18 @@ export function TopBar({ compact }: { compact: boolean }) {
       )}
 
       <div className="ml-auto flex items-center gap-0.5">
-        <span className="mr-1 flex items-center gap-1 text-[11px] text-faint" title={t('Live data: {status}', { status: t(wsStatus === 'open' ? 'live' : wsStatus) })}>
-          <span className={`inline-block h-2 w-2 rounded-full ${wsStatus === 'open' ? 'pulse' : ''}`} style={{ background: wsStatus === 'open' ? 'var(--up)' : wsStatus === 'connecting' ? 'var(--warn)' : 'var(--down)' }} />
-          {!compact && t(wsStatus === 'open' ? 'live' : wsStatus)}
-        </span>
+        {replaying ? (
+          // a replay shows history, not live data
+          <span className="mr-1 flex items-center gap-1 text-[11px] text-faint" title={t('Bar replay')}>
+            <span className="inline-block h-2 w-2 rounded-full" style={{ background: 'var(--warn)' }} />
+            {!compact && t('replay')}
+          </span>
+        ) : (
+          <span className="mr-1 flex items-center gap-1 text-[11px] text-faint" title={t('Live data: {status}', { status: t(wsStatus === 'open' ? 'live' : wsStatus) })}>
+            <span className={`inline-block h-2 w-2 rounded-full ${wsStatus === 'open' ? 'pulse' : ''}`} style={{ background: wsStatus === 'open' ? 'var(--up)' : wsStatus === 'connecting' ? 'var(--warn)' : 'var(--down)' }} />
+            {!compact && t(wsStatus === 'open' ? 'live' : wsStatus)}
+          </span>
+        )}
         {!compact && (
           <button className="tb-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={t('Toggle theme')}>{theme === 'dark' ? <Sun /> : <Moon />}</button>
         )}
@@ -142,8 +160,9 @@ export function TopBar({ compact }: { compact: boolean }) {
             button={<span className="tb-btn" title={t('More')} aria-label={t('More')}><Ellipsis /></span>}
             items={[
               ...CHART_TYPES.map((c) => ({ key: c.type, label: t(c.label), active: c.type === chartType, onClick: () => setChartType(c.type), Icon: c.Icon })),
-              ...(serverFeatures().shares ? [{ key: '__share', label: t('Share chart'), onClick: () => setSheet('share'), Icon: Share2, sep: true }] : []),
-              { key: '__theme', label: t(theme === 'dark' ? 'Light theme' : 'Dark theme'), onClick: () => setTheme(theme === 'dark' ? 'light' : 'dark'), Icon: theme === 'dark' ? Sun : Moon, sep: !serverFeatures().shares },
+              { key: '__replay', label: t(replaying ? 'Exit replay' : 'Bar replay'), active: replaying || picking, onClick: toggleReplay, Icon: Rewind, sep: true },
+              ...(serverFeatures().shares ? [{ key: '__share', label: t('Share chart'), onClick: () => setSheet('share'), Icon: Share2 }] : []),
+              { key: '__theme', label: t(theme === 'dark' ? 'Light theme' : 'Dark theme'), onClick: () => setTheme(theme === 'dark' ? 'light' : 'dark'), Icon: theme === 'dark' ? Sun : Moon, sep: true },
               { key: '__settings', label: t('Settings'), onClick: () => setSheet('settings'), Icon: Settings },
             ]}
           />
