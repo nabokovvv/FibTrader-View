@@ -110,7 +110,7 @@ function context(): { id: string; iv: Interval; perp: boolean } | null {
 
 const statusText: Record<Exclude<Status, undefined>, string> = {
   interval: 'Open interest is available from the 5m interval.',
-  'not-recorded': 'Liquidations are recorded for the top 50 coins by turnover.',
+  'not-recorded': 'Liquidations are recorded for a fixed list: top 100 coins by market cap and top 50 stocks, ETFs and metals.',
   'perp-only': 'Available for perpetuals only.',
   source: 'This exchange does not publish liquidations.',
   error: 'No data right now.',

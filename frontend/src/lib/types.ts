@@ -56,6 +56,7 @@ export interface IndicatorState {
   key: string
   name: string
   main: boolean          // drawn on the price pane
+  visible?: boolean      // missing in older layouts means visible
   calcParams?: number[]
   paneId?: string
   /** Non-numeric settings of plugin indicators (modes, thresholds). */

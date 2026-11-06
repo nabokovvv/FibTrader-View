@@ -6,9 +6,10 @@ Bybit perpetuals: all three (below). Hyperliquid: funding from its API (hourly),
 * Funding and open interest come from Bybit REST in fixed pages (200 points each). Closed pages are kept in
   ``derivs.sqlite`` and never fetched again; the current page lives in memory for a minute. One API request may
   fetch only a few pages (``derivs_pages``) inside the shared Bybit budget; the chart asks again for older data.
-* Liquidations have no history on Bybit (WS only), so a recorder listens to ``allLiquidation`` for the top coins
-  by turnover, sums them per coin and minute in memory and writes one row per coin-minute once a minute: the
-  database load is the same in a calm market and in a liquidation cascade. Rows older than 30 days are deleted.
+* Liquidations have no history on Bybit (WS only), so a recorder listens to ``allLiquidation`` for a FIXED list
+  (``liq_symbols.json``: top-100 crypto by market cap without stablecoins / tokenized gold, plus top-50 stock / ETF /
+  commodity perpetuals by turnover; it never rotates, so the series has no holes), sums them per coin and minute in memory and writes one row per coin-minute once a minute: the database
+  load is the same in a calm market and in a liquidation cascade. Rows are kept for good (they are backed up).
 """
 from __future__ import annotations
 
@@ -36,8 +37,7 @@ FUNDING_STEP = 8 * 60 * MINUTE   # page span = 200 x 8 h; shorter funding interv
 STEP = {"funding": FUNDING_STEP, "hl_funding": HOUR}   # Hyperliquid pays funding every hour
 HL_OI_EVERY_MS = 15 * MINUTE
 HL_OI_FINE_DAYS = 30             # 15-minute OI points are kept this long, hourly ones for good
-LIQ_TOP = 50
-LIQ_KEEP_DAYS = 30
+LIQ_SYMBOLS_FILE = Path(__file__).with_name("liq_symbols.json")
 WS_URL = "wss://stream.bybit.com/v5/public/linear"
 
 
@@ -55,7 +55,11 @@ CREATE TABLE IF NOT EXISTS pages(kind TEXT NOT NULL, symbol TEXT NOT NULL, iv TE
 CREATE TABLE IF NOT EXISTS liq(symbol TEXT NOT NULL, ts INTEGER NOT NULL, long_usd REAL NOT NULL,
   short_usd REAL NOT NULL, PRIMARY KEY(symbol, ts)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS hl_oi(symbol TEXT NOT NULL, ts INTEGER NOT NULL, oi REAL NOT NULL,
-  PRIMARY KEY(symbol, ts)) WITHOUT ROWID;""")
+  PRIMARY KEY(symbol, ts)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS liq_hist(symbol TEXT NOT NULL, res INTEGER NOT NULL, ts INTEGER NOT NULL,
+  long_usd REAL NOT NULL, short_usd REAL NOT NULL, PRIMARY KEY(symbol, res, ts)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS liq_cov(symbol TEXT NOT NULL, res INTEGER NOT NULL, start INTEGER NOT NULL,
+  cutoff INTEGER NOT NULL, PRIMARY KEY(symbol, res)) WITHOUT ROWID;""")
 
     def close(self) -> None:
         with self._lock:
@@ -89,11 +93,67 @@ CREATE TABLE IF NOT EXISTS hl_oi(symbol TEXT NOT NULL, ts INTEGER NOT NULL, oi R
                 raise
 
     def liq(self, symbol: str, start: int, end: int, bucket: int) -> list[list[float]]:
+        """Long / short USD per `bucket`. Before the symbol's cutover: imported history, each bucket from ONE
+        resolution — the finest one that divides the bucket and reaches back that far (never a coarse row split
+        into finer bars, never two resolutions added up). From the cutover on: what our recorder wrote."""
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT (ts / ?) * ? AS b, SUM(long_usd), SUM(short_usd) FROM liq WHERE symbol=? AND ts>=? AND ts<? "
-                "GROUP BY b ORDER BY b", (bucket, bucket, symbol, start, end)).fetchall()
-        return [[r[0], round(r[1], 2), round(r[2], 2)] for r in rows]
+            cov = self._cov(symbol)
+            cutoff = max((c for _, c in cov.values()), default=None)
+            q = ("SELECT (ts / ?) * ? AS b, SUM(long_usd), SUM(short_usd) FROM {t} WHERE symbol=? {r}AND ts>=? AND ts<? "
+                 "GROUP BY b ORDER BY b")
+            rows = self._conn.execute(q.format(t="liq", r=""), (bucket, bucket, symbol, max(start, cutoff or 0), end)).fetchall()
+            if cutoff is not None:
+                hi = min(end, cutoff)
+                for res, first in self._usable(cov, bucket):
+                    lo = max(start, first)
+                    if lo < hi:
+                        rows += self._conn.execute(q.format(t="liq_hist", r="AND res=? "), (bucket, bucket, symbol, res, lo, hi)).fetchall()
+                    hi = min(hi, first)
+        # the bucket holding the cutover gets its history part and its recorded part: one bar, both summed
+        acc: dict[int, list[float]] = {}
+        for b, lg, sh in rows:
+            slot = acc.setdefault(b, [0.0, 0.0])
+            slot[0] += lg
+            slot[1] += sh
+        return [[b, round(v[0], 2), round(v[1], 2)] for b, v in sorted(acc.items())]
+
+    def _cov(self, symbol: str) -> dict[int, tuple[int, int]]:
+        return {r[0]: (r[1], r[2]) for r in self._conn.execute("SELECT res, start, cutoff FROM liq_cov WHERE symbol=?", (symbol,))}
+
+    @staticmethod
+    def _usable(cov: dict[int, tuple[int, int]], bucket: int) -> list[tuple[int, int]]:
+        """(resolution, first whole bucket it covers), finest first."""
+        return [(res, -(-first // bucket) * bucket) for res, (first, _) in sorted(cov.items()) if bucket % res == 0]
+
+    def liq_first(self, symbol: str, bucket: int = MINUTE) -> int | None:
+        """The oldest bucket that has data at this bucket size (history or recorded)."""
+        with self._lock:
+            live = self._conn.execute("SELECT MIN(ts) FROM liq WHERE symbol=?", (symbol,)).fetchone()[0]
+            firsts = [f for _, f in self._usable(self._cov(symbol), bucket)]
+        return min([x for x in [live, *firsts] if x is not None], default=None)
+
+    def import_liq_history(self, symbol: str, res: int, rows: list[tuple[int, float, float]], first: int, cutoff: int) -> int:
+        """Replace the imported history of one symbol at one resolution (idempotent). Rows cover [first, cutoff):
+        a bucket missing inside it had no liquidations. Only whole buckets before the cutover are kept."""
+        if res <= 0 or cutoff % res or first % res:
+            raise ValueError("unaligned history")
+        keep = [(symbol, res, ts, float(lg), float(sh)) for ts, lg, sh in rows if first <= ts and ts + res <= cutoff and ts % res == 0]
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                self._conn.execute("DELETE FROM liq_hist WHERE symbol=? AND res=?", (symbol, res))
+                self._conn.executemany("INSERT INTO liq_hist(symbol, res, ts, long_usd, short_usd) VALUES(?,?,?,?,?)", keep)
+                self._conn.execute("INSERT OR REPLACE INTO liq_cov(symbol, res, start, cutoff) VALUES(?,?,?,?)", (symbol, res, first, cutoff))
+                self._conn.execute("COMMIT")
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+        return len(keep)
+
+    def drop_liq_before(self, cutoff: int) -> int:
+        """Recorded rows older than the cutover (the period the imported history replaces)."""
+        with self._lock:
+            return self._conn.execute("DELETE FROM liq WHERE ts<?", (cutoff,)).rowcount
 
     def add_hl_oi(self, rows: list[tuple[str, int, float]]) -> None:
         with self._lock:
@@ -119,20 +179,19 @@ CREATE TABLE IF NOT EXISTS hl_oi(symbol TEXT NOT NULL, ts INTEGER NOT NULL, oi R
         return r[0] if r else None
 
     def prune(self, unused_days: int = 60, now: float | None = None) -> dict:
-        """Liquidations older than 30 days; cached pages nobody opened for `unused_days`; Hyperliquid OI older than
+        """Cached pages nobody opened for `unused_days`; Hyperliquid OI older than
         30 days thinned to the LAST point of each hour (what the hourly panel shows; a missed :00 poll loses nothing).
         Only the week before the cut is thinned per run — older weeks were done by earlier runs."""
         now = now or time.time()
         cut = int((now - HL_OI_FINE_DAYS * 86400) * 1000) // HOUR * HOUR
         lo = cut - 7 * DAY
         with self._lock:
-            liq = self._conn.execute("DELETE FROM liq WHERE ts<?", (int((now - LIQ_KEEP_DAYS * 86400) * 1000),)).rowcount
             pages = self._conn.execute("DELETE FROM pages WHERE accessed<?", (int(now - unused_days * 86400),)).rowcount
             oi = self._conn.execute(
                 "DELETE FROM hl_oi WHERE ts>=? AND ts<? AND (symbol, ts) NOT IN ("
                 " SELECT symbol, MAX(ts) FROM hl_oi WHERE ts>=? AND ts<? GROUP BY symbol, ts / ?)",
                 (lo, cut, lo, cut, HOUR)).rowcount
-        return {"liq_rows": liq, "pages": pages, "hl_oi_rows": oi}
+        return {"pages": pages, "hl_oi_rows": oi}
 
 
 class Derivs:
@@ -224,9 +283,24 @@ class Derivs:
 
 
 # ------------------------------------------------------------------ liquidations
+def load_liq_symbols(path: Path = LIQ_SYMBOLS_FILE) -> list[str]:
+    """The fixed list of recorded coins. A broken file records nothing (never a silent fallback to another list)."""
+    try:
+        data = json.loads(path.read_text())
+        syms = data["symbols"] + data.get("tradfi", [])   # crypto by market cap + tokenized stocks / ETFs / metals
+        if not isinstance(syms, list) or not all(isinstance(s, str) and s.isalnum() and s.endswith("USDT") for s in syms):
+            raise ValueError("symbols must be a list of ...USDT tickers")
+        return list(dict.fromkeys(syms))[:200]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.error("liquidations: cannot read %s: %s", path.name, exc)
+        return []
+
+
 class LiqRecorder:
-    def __init__(self, derivs: Derivs, top_n: int = LIQ_TOP):
-        self.derivs, self.top_n = derivs, top_n
+    def __init__(self, derivs: Derivs, symbols: list[str] | None = None):
+        self.derivs = derivs
+        self.symbols = load_liq_symbols() if symbols is None else symbols
+        derivs.recorded = set(self.symbols)
         self._acc: dict[tuple[str, int], list[float]] = {}
         self._tasks: list[asyncio.Task] = []
 
@@ -279,19 +353,18 @@ class LiqRecorder:
     async def _listen(self) -> None:
         import websockets
         backoff = 2.0
+        symbols = self.symbols
+        if not symbols:
+            log.error("liquidations: no symbols in %s, nothing is recorded", LIQ_SYMBOLS_FILE.name)
+            return
         while True:
             try:
-                symbols = await self.derivs.provider.top_by_turnover(self.top_n)
-                self.derivs.recorded = set(symbols)
                 async with websockets.connect(WS_URL, ping_interval=20, max_size=2**20, open_timeout=15) as ws:
                     for i in range(0, len(symbols), 10):
                         await ws.send(json.dumps({"op": "subscribe", "args": [f"allLiquidation.{s}" for s in symbols[i:i + 10]]}))
                     backoff = 2.0
-                    started = time.monotonic()
                     async for raw in ws:
                         self.on_message(raw)
-                        if time.monotonic() - started > 6 * 3600:
-                            break  # refresh the top list
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -450,9 +523,9 @@ async def _answer(d: Derivs, kind: str, sym: str, interval: str, start: int, end
         bucket = span if span <= DAY else DAY  # weeks / months: daily buckets, the chart sums them into bars
         start = max(start, end - 5000 * bucket)
         pts = await asyncio.to_thread(d.store.liq, sym, start, end, bucket)
-        # nothing older than the retention window exists; otherwise the chart may ask again further back
-        oldest_kept = int(time.time() * 1000) - LIQ_KEEP_DAYS * DAY
-        return {"points": pts, "covered_from": start, "exhausted": start <= oldest_kept, "recorded": sym in d.recorded}
+        # nothing older than the first stored row exists; otherwise the chart may ask again further back
+        first = await asyncio.to_thread(d.store.liq_first, sym, bucket)
+        return {"points": pts, "covered_from": start, "exhausted": first is None or start <= first, "recorded": sym in d.recorded}
     iv = "funding" if kind == "funding" else OI_INTERVAL.get(interval)
     if iv is None:
         return {"points": [], "covered_from": start, "exhausted": True, "unavailable": "interval"}

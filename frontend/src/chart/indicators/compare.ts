@@ -98,8 +98,8 @@ export const COMPARE: IndicatorTemplate<Row, number, Ext> = {
     const color = (indicator.styles?.lines?.[0]?.color as string | undefined) ?? COMPARE_COLORS[0]
     const pct = r?.pct
     return {
-      name: '', calcParamsText: '', features: [],
-      legends: [{ title: { text: `${ext.label ?? ext.symbol ?? ''} `, color }, value: { text: pct === undefined ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`, color } }],
+      name: ext.label ?? ext.symbol ?? 'CMP', calcParamsText: '', features: [],
+      legends: [{ title: '', value: { text: pct === undefined ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`, color } }],
     }
   },
 }
@@ -108,7 +108,11 @@ export function addCompare(s: SymbolInfo) {
   const st = useStore.getState()
   const cmps = st.indicators.filter((i) => i.name === 'CMP')
   if (s.id === st.symbol?.id) { useStore.setState({ error: t('This is the symbol of the chart itself.') }); return }
-  if (cmps.some((i) => i.options?.symbol === s.id)) return
+  const existing = cmps.find((i) => i.options?.symbol === s.id)
+  if (existing) {
+    if (existing.visible === false) st.updateIndicator(existing.key, { visible: true })
+    return
+  }
   if (cmps.length >= MAX_COMPARE) { useStore.setState({ error: t('Up to {n} symbols can be compared at once.', { n: MAX_COMPARE }) }); return }
   st.addIndicator('CMP', true, undefined, { symbol: s.id, label: tickerOf(s) })
 }

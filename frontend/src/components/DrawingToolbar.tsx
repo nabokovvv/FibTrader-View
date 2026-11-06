@@ -1,7 +1,8 @@
 import { Eye, EyeOff, Lock, LockOpen, Magnet, Trash2, Undo2 } from 'lucide-react'
 import { cancelPendingSave } from '../chart/pendingSave'
 import { t as tr } from '../i18n'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from '../api/client'
 import { chartHolder } from '../chart/ChartView'
 import { MEASURE_ICON, TOOL_GROUPS, TOOLS, type Icon, type ToolEntry } from '../chart/overlays'
@@ -31,14 +32,47 @@ export function DrawingToolbar({ horizontal = false }: { horizontal?: boolean })
   const [allLocked, setAllLocked] = useState(false)
   const [allHidden, setAllHidden] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const anchors = useRef(new Map<string, HTMLDivElement>())
+  const [menuPos, setMenuPos] = useState({ left: 0, top: 0, maxHeight: 300, width: 220 })
   const hoverTimer = useRef<number | null>(null)
   const clearHover = () => { if (hoverTimer.current) { window.clearTimeout(hoverTimer.current); hoverTimer.current = null } }
   const canHover = useMemo(() => window.matchMedia('(hover: hover) and (pointer: fine)').matches, [])
   useEffect(() => () => clearHover(), [])
 
+  useLayoutEffect(() => {
+    if (!open) return
+    const anchor = anchors.current.get(open)?.getBoundingClientRect()
+    const menu = menuRef.current
+    if (!anchor || !menu) return
+    // Resolve env() through computed padding; custom properties themselves may still contain env().
+    const bounds = menu.getBoundingClientRect()
+    const shell = document.querySelector('.app-shell')
+    const root = shell?.getBoundingClientRect()
+    const css = shell ? getComputedStyle(shell) : null
+    const left = (root?.left ?? 0) + (parseFloat(css?.paddingLeft ?? '') || 0) + 6
+    const right = window.innerWidth - (parseFloat(css?.paddingRight ?? '') || 0) - 6
+    const bottom = window.innerHeight - (parseFloat(css?.paddingBottom ?? '') || 0) - 6
+    const top = (document.querySelector('header')?.getBoundingClientRect().bottom ?? 0) + 6
+    const width = horizontal ? right - left : Math.min(240, right - left)
+    const maxHeight = Math.max(44, (horizontal ? (ref.current?.getBoundingClientRect().top ?? bottom) - 6 : bottom) - top)
+    setMenuPos({ width, maxHeight,
+      left: horizontal ? left : Math.max(left, Math.min(anchor.right + 5, right - width)),
+      top: Math.max(top, Math.min(horizontal ? (ref.current?.getBoundingClientRect().top ?? bottom) - bounds.height - 6 : anchor.top, bottom - Math.min(bounds.height, maxHeight))),
+    })
+  }, [open, horizontal, menuPos.width, menuPos.maxHeight])
+
+  useEffect(() => {
+    const close = () => { clearHover(); setOpen(null) }
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+    window.addEventListener('resize', close)
+    document.addEventListener('keydown', key)
+    return () => { window.removeEventListener('resize', close); document.removeEventListener('keydown', key) }
+  }, [])
+
   useEffect(() => {
     if (!open) return
-    const onDoc = (e: MouseEvent | TouchEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(null) }
+    const onDoc = (e: MouseEvent | TouchEvent) => { if (!ref.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) setOpen(null) }
     document.addEventListener('mousedown', onDoc)
     document.addEventListener('touchstart', onDoc)
     return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('touchstart', onDoc) }
@@ -86,7 +120,7 @@ export function DrawingToolbar({ horizontal = false }: { horizontal?: boolean })
     const toggle = () => setOpen(open === g ? null : g)
     return (
       <div
-        key={g} className="relative"
+        key={g} className="relative shrink-0" ref={(el) => { if (el) anchors.current.set(g, el); else anchors.current.delete(g) }}
         onMouseEnter={canHover ? () => { clearHover(); hoverTimer.current = window.setTimeout(() => setOpen(g), 380) } : undefined}
         onMouseLeave={canHover ? () => { clearHover(); hoverTimer.current = window.setTimeout(() => setOpen((o) => (o === g ? null : o)), 220) } : undefined}
       >
@@ -112,12 +146,13 @@ export function DrawingToolbar({ horizontal = false }: { horizontal?: boolean })
             <svg viewBox="0 0 8 8" className="h-2 w-2" fill="currentColor"><path d="M8 8H2L8 2z" /></svg>
           </span>
         )}
-        {open === g && (
+        {open === g && createPortal(
           <div
-            role="menu"
-            className={`z-40 rounded-lg border border-line bg-panel p-1 shadow-xl ${horizontal ? 'slide-up fixed inset-x-2 grid grid-cols-2 gap-0.5' : 'absolute left-full top-0 ml-1 min-w-[220px]'}`}
-            // the phone draw bar scrolls horizontally (overflow clips absolute children): pin the menu above it
-            style={horizontal ? { bottom: window.innerHeight - (ref.current?.getBoundingClientRect().top ?? window.innerHeight) + 6 } : undefined}
+            ref={menuRef} role="menu"
+            className={`fixed z-40 overflow-y-auto overscroll-contain rounded-lg border border-line bg-panel p-1 shadow-xl ${horizontal ? 'grid grid-cols-2 gap-0.5' : ''}`}
+            style={menuPos}
+            onMouseEnter={canHover ? clearHover : undefined}
+            onMouseLeave={canHover ? () => { clearHover(); hoverTimer.current = window.setTimeout(() => setOpen(null), 220) } : undefined}
           >
             {/* invisible bridge so the pointer can travel from the button to the menu without closing it */}
             {!horizontal && <span className="absolute -left-2 top-0 h-full w-2" />}
@@ -129,7 +164,7 @@ export function DrawingToolbar({ horizontal = false }: { horizontal?: boolean })
                 {x.hotkey && !horizontal && <span className="kbd">{x.hotkey}</span>}
               </button>
             ))}
-          </div>
+          </div>, document.body
         )}
       </div>
     )
@@ -138,7 +173,7 @@ export function DrawingToolbar({ horizontal = false }: { horizontal?: boolean })
   const cycleMagnet = () => setMagnet(magnet === 'normal' ? 'weak_magnet' : magnet === 'weak_magnet' ? 'strong_magnet' : 'normal')
 
   return (
-    <div ref={ref} className={`flex ${horizontal ? 'flex-row items-center gap-1 overflow-x-auto px-2' : 'flex-col items-center gap-1 py-2'}`}>
+    <div ref={ref} onScroll={() => { clearHover(); setOpen(null) }} className={`drawing-rail flex [&>*]:shrink-0 ${horizontal ? 'flex-row items-center gap-1 overflow-x-auto px-2' : 'h-full min-h-0 flex-col items-center gap-1 overflow-y-auto overscroll-contain py-2'}`}>
       {TOOL_GROUPS.map(groupBtn)}
       <button className="rail-btn" data-active={tool === 'measure'} onClick={() => setTool(tool === 'measure' ? null : 'measure')} title={tr('Ruler — click start, click end')}>
         <ToolIcon icon={MEASURE_ICON} />

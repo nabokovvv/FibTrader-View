@@ -416,7 +416,7 @@ export const RU: Record<string, string> = {
   'Funding rate': 'Ставка фандинга',
   'Liquidations': 'Ликвидации',
   'Open interest is available from the 5m interval.': 'Открытый интерес доступен с таймфрейма 5м.',
-  'Liquidations are recorded for the top 50 coins by turnover.': 'Ликвидации записываются для топ-50 монет по обороту.',
+  'Liquidations are recorded for a fixed list: top 100 coins by market cap and top 50 stocks, ETFs and metals.': 'Ликвидации записываются для фиксированного списка: топ-100 монет по капитализации и топ-50 акций, ETF и металлов.',
   'Available for perpetuals only.': 'Только для бессрочных фьючерсов.',
   'This exchange does not publish liquidations.': 'Эта биржа не публикует ликвидации.',
   'No data right now.': 'Сейчас нет данных.',

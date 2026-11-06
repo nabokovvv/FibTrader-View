@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { cancelPendingSave } from './pendingSave'
-import { dispose, init, type Chart, type IndicatorCreate, type KLineData, type Overlay, type OverlayCreate } from 'klinecharts'
+import { dispose, init, type Chart, type IndicatorCreate, type IndicatorTooltipData, type KLineData, type Overlay, type OverlayCreate } from 'klinecharts'
 import { ApiError, api } from '../api/client'
 import { getLang, t } from '../i18n'
 import { ws } from '../api/ws'
@@ -8,7 +8,7 @@ import type { Bar, DrawingRecord, Interval, SymbolInfo } from '../lib/types'
 import { toolStyle, useStore } from '../state/store'
 import { INTERVAL_MS, PERIOD, intervalOf } from './periods'
 import { haList, haLive, isHeikinAshi } from './heikinAshi'
-import { ALERT_FEATURE_ID, buildStyles } from './theme'
+import { ALERT_FEATURE_ID, INDICATOR_VISIBILITY_ID, buildStyles, indicatorEye } from './theme'
 import { alertMarkets, openAlertAt, useAlerts } from '../state/alerts'
 import { ALERT_LINES, ALERT_LINES_ID, type AlertLevel } from './indicators/alertLines'
 import { levelProps, overrideLevels, padParams } from './indicators/levels'
@@ -108,6 +108,14 @@ export function ChartView() {
       if (d?.feature?.id !== ALERT_FEATURE_ID || d.crosshair?.y == null) return
       const price = priceAt(chart, d.crosshair.paneId ?? 'candle_pane', d.crosshair.y)
       if (price != null) openAlertAt(price)
+    })
+
+    chart.subscribeAction('onIndicatorTooltipFeatureClick', (data) => {
+      const d = data as { paneId?: string; indicator?: { id?: string }; feature?: { id?: string } } | undefined
+      if (d?.feature?.id !== INDICATOR_VISIBILITY_ID || d.paneId !== 'candle_pane') return
+      const state = useStore.getState()
+      const ind = state.indicators.find((i) => i.key === d.indicator?.id && i.main)
+      if (ind) state.updateIndicator(ind.key, { visible: ind.visible === false })
     })
 
     chart.setDataLoader({
@@ -365,7 +373,7 @@ export function ChartView() {
     for (const ind of list) {
       const prev = created.get(ind.key)
       if (!prev) {
-        const create: IndicatorCreate = { id: ind.key, name: ind.name }
+        const create: IndicatorCreate = { id: ind.key, name: ind.name, visible: ind.visible !== false }
         const meta = INDICATOR_CATALOG.find((m) => m.name === ind.name)
         const params = padParams(ind.calcParams, meta?.params)   // layouts saved before the band parameters existed
         if (params?.length) create.calcParams = params
@@ -376,6 +384,18 @@ export function ChartView() {
         if (plugin?.initialExtend) create.extendData = plugin.initialExtend(ind)
         if (ind.name === 'CMP') Object.assign(create, compareCreate(ind, list))
         const paneId = chart.createIndicator(create, ind.main)
+        if (ind.main) {
+          const runtime = chart.getIndicators({ id: ind.key })[0]
+          const original = runtime?.createTooltipDataSource
+          chart.overrideIndicator({ id: ind.key, name: ind.name, createTooltipDataSource: (args) => {
+            const data = original?.(args)
+            // v10 accepts partial tooltip overrides at runtime; empty name/legends would erase native defaults.
+            return { ...data, features: [
+              ...(data?.features ?? []).filter((f) => f.id !== INDICATOR_VISIBILITY_ID),
+              indicatorEye(useStore.getState().theme, args.indicator.visible),
+            ] } as IndicatorTooltipData
+          } })
+        }
         created.set(ind.key, { name: ind.name, calcParams: ind.calcParams })
         if (paneId && !ind.main) chart.setPaneOptions({ id: paneId, minHeight: 60, height: 120 })
       } else if (JSON.stringify(prev.calcParams) !== JSON.stringify(ind.calcParams)) {
@@ -384,6 +404,10 @@ export function ChartView() {
         chart.overrideIndicator({ id: ind.key, name: ind.name, calcParams: params })
         overrideLevels(chart, ind.key, ind.name, params, defaults)
         created.set(ind.key, { name: ind.name, calcParams: ind.calcParams })
+      }
+      const runtime = chart.getIndicators({ id: ind.key })[0]
+      if (runtime && runtime.visible !== (ind.visible !== false)) {
+        chart.overrideIndicator({ id: ind.key, name: ind.name, visible: ind.visible !== false })
       }
     }
   }

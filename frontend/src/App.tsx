@@ -75,34 +75,30 @@ export default function App() {
   useEffect(() => (ready ? startAlertWatcher() : undefined), [ready])
 
   const phone = vp === 'phone'
-  const watchlistDocked = vp === 'desktop' && showWatchlist
-  const watchlistOverlay = vp === 'tablet' && showWatchlist
+  const watchlistDocked = !phone && showWatchlist
 
   const openAdd = () => { setAddMode(true); setSheet('search') }
 
   return (
-    <div className="flex h-full flex-col" style={{ paddingBottom: phone ? 'calc(56px + var(--safe-bottom))' : 0 }}>
-      <TopBar compact={phone} />
+    <div className="app-shell flex h-full flex-col" style={{ paddingLeft: 'var(--safe-left)', paddingRight: 'var(--safe-right)', paddingBottom: phone ? 'calc(56px + var(--safe-bottom))' : 'var(--safe-bottom)' }}>
+      <TopBar compact={phone} narrow={vp === 'tablet'} />
       <div className="flex min-h-0 flex-1">
         {!phone && (
-          <div className="w-11 shrink-0 border-r border-line bg-panel"><DrawingToolbar /></div>
+          <div className="min-h-0 w-[45px] shrink-0 border-r border-line bg-panel"><DrawingToolbar /></div>
         )}
         <main className="relative min-w-0 flex-1 bg-bg">
           {ready ? <ChartView /> : <div className="flex h-full items-center justify-center text-muted">{t('Loading…')}</div>}
           <SelectionToolbar />
           <ToolOptionsBar />
           {ready && <ReplayBar />}
-          {watchlistOverlay && (
-            <div className="sheet absolute inset-y-0 right-0 z-20 w-[300px]"><Watchlist onAdd={openAdd} /></div>
-          )}
         </main>
         {watchlistDocked && (
-          <div className="sheet w-[290px] shrink-0"><Watchlist onAdd={openAdd} /></div>
+          <div className="sheet min-w-0 shrink-0" style={{ width: vp === 'tablet' ? 'min(300px, 32%)' : 290 }}><Watchlist onAdd={openAdd} /></div>
         )}
       </div>
 
       {phone && (
-        <nav className="fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-line bg-panel" style={{ height: 'calc(56px + var(--safe-bottom))', paddingBottom: 'var(--safe-bottom)' }}>
+        <nav className="fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-line bg-panel" style={{ height: 'calc(56px + var(--safe-bottom))', paddingBottom: 'var(--safe-bottom)', paddingLeft: 'var(--safe-left)', paddingRight: 'var(--safe-right)' }}>
           {[
             { key: 'tools', label: 'Draw', Icon: Pencil },
             { key: 'indicators', label: 'Indicators', Icon: SlidersHorizontal },
@@ -119,12 +115,12 @@ export default function App() {
       )}
 
       {phone && sheet === 'tools' && (
-        <div className="sheet fixed inset-x-0 z-30 border-t" style={{ bottom: 'calc(56px + var(--safe-bottom))', height: 56 }}>
+        <div className="sheet fixed inset-x-0 z-30 border-t" style={{ left: 'var(--safe-left)', right: 'var(--safe-right)', bottom: 'calc(56px + var(--safe-bottom))', height: 56 }}>
           <DrawingToolbar horizontal />
         </div>
       )}
       {phone && sheet === 'watchlist' && (
-        <div className="sheet slide-up fixed inset-x-0 z-30 border-t" style={{ bottom: 'calc(56px + var(--safe-bottom))', height: '60dvh' }}>
+        <div className="sheet slide-up fixed inset-x-0 z-30 border-t" style={{ left: 'var(--safe-left)', right: 'var(--safe-right)', bottom: 'calc(56px + var(--safe-bottom))', height: '60dvh' }}>
           <Watchlist onAdd={openAdd} />
         </div>
       )}

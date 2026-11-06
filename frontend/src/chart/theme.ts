@@ -1,4 +1,4 @@
-import type { DeepPartial, Styles } from 'klinecharts'
+import type { DeepPartial, Styles, TooltipFeatureStyle } from 'klinecharts'
 import { t as tr } from '../i18n'
 import type { Settings, Theme } from '../state/store'
 import type { ChartType } from '../lib/types'
@@ -39,6 +39,22 @@ export const ALERT_FEATURE_ID = 'alert-here'
 const TOUCH = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches
 // a small bell in a 14 x 14 box, absolute commands only (KLineChart draws feature paths unscaled)
 const BELL_PATH = 'M 3.5 10 L 3.5 6.6 Q 3.5 2.6 7 2.6 Q 10.5 2.6 10.5 6.6 L 10.5 10 M 2 10.4 L 12 10.4 M 5.8 12.2 Q 7 13.6 8.2 12.2 M 7 1.2 L 7 2.6'
+
+export const INDICATOR_VISIBILITY_ID = 'indicator-visibility'
+const EYE_PATH = 'M 1 7 Q 7 -1 13 7 Q 7 15 1 7 M 9 7 A 2 2 0 1 1 5 7 A 2 2 0 1 1 9 7'
+
+export function indicatorEye(theme: Theme, visible: boolean): TooltipFeatureStyle {
+  const tone = theme === 'dark' ? DARK : LIGHT
+  return {
+    id: INDICATOR_VISIBILITY_ID, position: 'middle', type: 'path', size: TOUCH ? 26 : 18,
+    paddingLeft: TOUCH ? 6 : 2, paddingTop: TOUCH ? 6 : 2,
+    paddingRight: TOUCH ? 6 : 2, paddingBottom: TOUCH ? 6 : 2,
+    marginLeft: 0, marginRight: 4, marginTop: 0, marginBottom: 0,
+    color: tone.muted, activeColor: tone.text,
+    backgroundColor: 'transparent', activeBackgroundColor: tone.separatorActive, borderRadius: 3,
+    content: { path: EYE_PATH + (visible ? '' : ' M 1 1 L 13 13'), style: 'stroke', lineWidth: 1.3 },
+  }
+}
 
 export function buildStyles(theme: Theme, settings: Settings, chartType: ChartType, alertButton = false): DeepPartial<Styles> {
   const t = theme === 'dark' ? DARK : LIGHT

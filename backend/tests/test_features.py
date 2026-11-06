@@ -252,8 +252,8 @@ async def test_oi_pages_are_cached_and_budgeted(tmp_path):
 
 async def test_liquidations_are_summed_per_minute(tmp_path):
     d = Derivs(DerivStore(tmp_path / "derivs.sqlite"), None)
-    d.recorded = {"BTCUSDT"}
-    rec = LiqRecorder(d)
+    rec = LiqRecorder(d, ["BTCUSDT"])
+    assert d.recorded == {"BTCUSDT"}
     t0 = 1_700_000_040_000
     msg = lambda side, v: json.dumps({"topic": "allLiquidation.BTCUSDT", "data": [{"T": t0 + 1000, "s": "BTCUSDT", "S": side, "v": v, "p": "100"}]})  # noqa: E731
     rec.on_message(msg("Buy", "2"))
@@ -266,6 +266,22 @@ async def test_liquidations_are_summed_per_minute(tmp_path):
     assert rows == [[t0 // 3_600_000 * 3_600_000, 300.0, 100.0]]
     assert d.store.liq("XYZUSDT", 0, t0 * 2, 60_000) == []
     assert inspect.iscoroutinefunction(rec.flush)
+    # liquidations are kept for good: maintenance never deletes them
+    d.store.add_liq([("BTCUSDT", 1_000_000_000_000, 5.0, 0.0)])
+    d.store.prune(now=t0 / 1000 + 400 * 86400)
+    assert d.store.liq_first("BTCUSDT") == 1_000_000_000_000
+
+
+def test_fixed_liquidation_list(tmp_path):
+    from app.derivs import LIQ_SYMBOLS_FILE, load_liq_symbols
+    syms = load_liq_symbols()
+    assert syms and len(syms) == len(set(syms)) and {"BTCUSDT", "NVDAUSDT", "XAUUSDT"} <= set(syms)
+    assert not {"USDCUSDT", "PAXGUSDT", "XAUTUSDT", "USDEUSDT"} & set(syms)   # no stablecoins / gold
+    assert LIQ_SYMBOLS_FILE.exists()
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"symbols": ["BTC/USDT"]}')
+    assert load_liq_symbols(bad) == []          # a broken list records nothing rather than something else
+    assert load_liq_symbols(tmp_path / "missing.json") == []
 
 
 def test_snapshot_is_cleaned():
@@ -292,3 +308,35 @@ async def test_cached_pages_are_bounded_too(tmp_path):
         await d.series("oi", "BTCUSDT", "1h", start, now, max_pages=10)
     res = await d.series("oi", "BTCUSDT", "1h", start, now, max_pages=10, max_read=12)
     assert len(res["points"]) <= 12 * 200 and res["covered_from"] > start
+
+
+def test_liquidation_history_never_double_counts(tmp_path):
+    from app.derivs import DerivStore
+    M, H, D = 60_000, 3_600_000, 86_400_000
+    st = DerivStore(tmp_path / "d.sqlite")
+    T = 100 * D                                              # cutover: history before, our recorder after
+    st.add_liq([("BTCUSDT", T - 5 * M, 999.0, 999.0), ("BTCUSDT", T + M, 7.0, 1.0)])   # pre-cutover live row is ignored
+    # minutes for the last 2 hours, hours for the last 3 days, days for 20 days; all values 1/2
+    st.import_liq_history("BTCUSDT", M, [(T - 2 * H + k * M, 1.0, 2.0) for k in range(120)], T - 2 * H, T)
+    st.import_liq_history("BTCUSDT", H, [(T - 72 * H + k * H, 10.0, 20.0) for k in range(72)], T - 72 * H, T)
+    st.import_liq_history("BTCUSDT", D, [(T - 20 * D + k * D, 100.0, 200.0) for k in range(20)] + [(T, 5.0, 5.0)], T - 20 * D, T)
+    # 1m chart: minute history up to the cutover, then live; nothing older than the minute data
+    m = st.liq("BTCUSDT", T - 3 * H, T + H, M)
+    assert m[0] == [T - 2 * H, 1.0, 2.0] and m[-1] == [T + M, 7.0, 1.0] and len(m) == 121
+    # 1h chart: the last 2 hours come from minutes (120 x 1 = 60 per hour), older ones from hourly rows
+    h = dict((r[0], r[1]) for r in st.liq("BTCUSDT", T - 4 * H, T, H))
+    assert h == {T - 4 * H: 10.0, T - 3 * H: 10.0, T - 2 * H: 60.0, T - H: 60.0}
+    # 1D chart: minutes do not cover a whole day, so the day before the cutover comes from hours alone
+    d = dict((r[0], r[1]) for r in st.liq("BTCUSDT", T - 5 * D, T + D, D))
+    assert d[T - D] == 24 * 10.0 and d[T - 4 * D] == 100.0 and d[T] == 7.0
+    # a cutover inside a bucket: its history part and its recorded part make ONE bar
+    T2 = 200 * D + 30 * M
+    st.add_liq([("ETHUSDT", T2 + M, 3.0, 0.0)])
+    st.import_liq_history("ETHUSDT", M, [(T2 - 10 * M, 2.0, 1.0)], 200 * D, T2)
+    assert st.liq("ETHUSDT", 200 * D, 201 * D, H) == [[200 * D, 5.0, 1.0]]
+    assert d[T - 3 * D] == 10.0 * 24 and d[T - 4 * D] == 100.0          # hours reach 3 days back, days before that
+    # the oldest bucket per chart size, and re-importing replaces instead of adding up
+    assert st.liq_first("BTCUSDT", M) == T - 2 * H and st.liq_first("BTCUSDT", D) == T - 20 * D
+    st.import_liq_history("BTCUSDT", D, [(T - 20 * D + k * D, 100.0, 200.0) for k in range(20)], T - 20 * D, T)
+    assert dict((r[0], r[1]) for r in st.liq("BTCUSDT", T - 5 * D, T, D))[T - 4 * D] == 100.0
+    assert st.drop_liq_before(T) == 1

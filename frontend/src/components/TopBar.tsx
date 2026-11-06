@@ -19,7 +19,7 @@ const CHART_TYPES: Array<{ type: ChartType; label: string; Icon: typeof ChartCan
   { type: 'area', label: 'Area', Icon: ChartArea },
 ]
 
-export function TopBar({ compact }: { compact: boolean }) {
+export function TopBar({ compact, narrow = false }: { compact: boolean; narrow?: boolean }) {
   const symbol = useStore((s) => s.symbol)
   const interval = useStore((s) => s.interval)
   const setInterval = useStore((s) => s.setInterval)
@@ -59,27 +59,33 @@ export function TopBar({ compact }: { compact: boolean }) {
   return (
     // height includes the status-bar inset (when the app is drawn under it), so the 44 px row never shrinks
     <header className="flex shrink-0 items-center gap-1 border-b border-line bg-panel px-2" style={{ height: 'calc(44px + var(--safe-top))', paddingTop: 'var(--safe-top)' }}>
-      <a className="mr-1 hidden h-8 w-8 items-center justify-center rounded-md sm:flex" href="/" aria-label="FibTrader View" title="FibTrader View">
+      <a className="mr-1 hidden h-8 w-8 shrink-0 items-center justify-center rounded-md sm:flex" href="/" aria-label="FibTrader View" title="FibTrader View">
         <Logo className="h-[22px] w-[22px] text-text" />
       </a>
 
-      <button className="tb-btn !h-8 max-w-[46vw] gap-2 !px-2 sm:max-w-none" onClick={() => setSheet('search')} title={t('Search symbol (⌘K)')}>
+      <button className="tb-btn !h-8 min-w-0 max-w-[46vw] gap-2 !px-2 sm:max-w-none" onClick={() => setSheet('search')} title={t('Search symbol (⌘K)')}>
         {!compact && <Search className="!h-4 !w-4 shrink-0 text-muted" />}
         <span className="min-w-[3rem] truncate text-[14px] font-semibold text-text">{symbol ? tickerOf(symbol) : '—'}</span>
         {symbol && !compact && <MarketBadge market={symbol.market} currency={symbol.currency} />}
         {symbol && !compact && <span className="hidden max-w-[220px] truncate text-muted lg:inline">{symName(symbol.name)}</span>}
       </button>
 
-      {price !== undefined && (
+      {price !== undefined && !narrow && (
         <span className={`ml-1 text-[14px] font-semibold ${dirUp ? 'num-up' : 'num-down'}`}>{fmtPrice(price, symbol?.price_precision)}</span>
       )}
-      {quote?.ch !== undefined && quote?.ch !== null && !compact && !replaying && (
+      {quote?.ch !== undefined && quote?.ch !== null && !compact && !narrow && !replaying && (
         <span className={`text-[12px] ${quote.ch >= 0 ? 'num-up' : 'num-down'}`}>{quote.ch >= 0 ? '+' : ''}{quote.ch.toFixed(2)}%</span>
       )}
 
       {!compact && <div className="mx-1 h-5 w-px bg-line" />}
 
-      {compact ? (
+      {!compact && (
+        <button className="tb-btn" onClick={() => setSheet('compare')} title={t('Compare with another symbol')}>
+          <GitCompareArrows />
+        </button>
+      )}
+
+      {compact || narrow ? (
         <IntervalMenu interval={interval} onPick={setInterval} />
       ) : (
         <div className="flex items-center">
@@ -102,11 +108,6 @@ export function TopBar({ compact }: { compact: boolean }) {
       {!compact && (
         <button className="tb-btn" onClick={() => setSheet('indicators')} title={t('Indicators')}>
           <SlidersHorizontal /><span className="hidden text-[12px] xl:inline">{t('Indicators')}</span>
-        </button>
-      )}
-      {!compact && (
-        <button className="tb-btn" onClick={() => setSheet('compare')} title={t('Compare with another symbol')}>
-          <GitCompareArrows />
         </button>
       )}
       {!compact && (
@@ -146,9 +147,6 @@ export function TopBar({ compact }: { compact: boolean }) {
             <span className={`inline-block h-2 w-2 rounded-full ${wsStatus === 'open' ? 'pulse' : ''}`} style={{ background: wsStatus === 'open' ? 'var(--up)' : wsStatus === 'connecting' ? 'var(--warn)' : 'var(--down)' }} />
             {!compact && t(wsStatus === 'open' ? 'live' : wsStatus)}
           </span>
-        )}
-        {!compact && (
-          <button className="tb-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={t('Toggle theme')}>{theme === 'dark' ? <Sun /> : <Moon />}</button>
         )}
         {!compact && (
           <button className="tb-btn" data-active={showWatchlist} onClick={toggleWatchlist} title={t('Watchlist')}><PanelRight /></button>

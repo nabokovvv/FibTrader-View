@@ -4,8 +4,9 @@
 #   latest/derivs.sqlite.zst       recorded liquidations and Hyperliquid open interest
 #   latest/hl-archive.sqlite.zst   Hyperliquid 1h / 4h / 1D bars older than the API's 5000-bar window
 # A snapshot (sqlite3 .backup) replaces the copy in R2 only if it passes PRAGMA quick_check AND did not shrink:
-# next to each copy R2 keeps <name>.metric — a count that only grows in normal use (archived bars, recorded OI hours,
-# users). A smaller count means the file was lost and recreated (or damaged): the good copy stays, an alert goes out.
+# next to each copy R2 keeps <name>.metric — counts that only grow in normal use (archived bars, recorded OI hours,
+# liquidation rows, users); several counts are compared one by one, so growth in one cannot hide a loss in another.
+# A smaller count means the file was lost and recreated (or damaged): the good copy stays, an alert goes out.
 # After checking what happened, `sudo FV_BACKUP_FORCE=1 fv-backup-r2` accepts the smaller database.
 # Credentials: /etc/fibtrader/r2.env (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET).
 # Restore: rclone copy r2:$R2_BUCKET/latest/<name>.sqlite.zst . && zstd -d <name>.sqlite.zst, stop fibtrader-view,
@@ -20,14 +21,18 @@ fail() { fv-alert "backup failed" "$1"; exit 1; }
 DATA="${FV_DATA:-/home/ubuntu/fibtrader-view/data}"   # FV_DATA: tests only
 FORCE="${FV_BACKUP_FORCE:-0}"
 
-# what must not shrink between two backups (bars are never pruned; OI keeps one point per hour; users stay)
+# what must not shrink between two backups (bars are never pruned; OI keeps one point per hour; liquidations are
+# kept for good; users stay). derivs: OI hours, recorded liquidation rows, imported liquidation history rows.
 metric() {
   case "$1" in
     app) sqlite3 "$2" "SELECT COUNT(DISTINCT user_id) FROM watchlists;" ;;
-    derivs) sqlite3 "$2" "SELECT COUNT(*) FROM (SELECT DISTINCT symbol, ts / 3600000 FROM hl_oi);" ;;
+    derivs) sqlite3 "$2" "SELECT (SELECT COUNT(*) FROM (SELECT DISTINCT symbol, ts / 3600000 FROM hl_oi)) || ' ' ||
+      (SELECT COUNT(*) FROM liq) || ' ' || (SELECT COUNT(*) FROM liq_hist);" ;;
     hl-archive) sqlite3 "$2" "SELECT COUNT(*) FROM bars;" ;;
   esac
 }
+# 0 when every count in $2 is >= the one at the same place in $1 (a missing old count is 0: older metric files)
+grown() { local -a a=($1) b=($2); local i; for i in "${!a[@]}"; do [ "${b[$i]:-0}" -ge "${a[$i]}" ] || return 1; done; }
 
 tmp=$(mktemp -d /var/tmp/fv-backup.XXXXXX); trap 'rm -rf "$tmp"' EXIT
 sent=(); kept=()
@@ -38,8 +43,11 @@ for spec in "app:$DATA/app.sqlite" "derivs:$DATA/candles/derivs.sqlite" "hl-arch
   sqlite3 "$src" ".backup '$snap'" || fail "snapshot of $name failed (the previous copy in R2 was kept)"
   [ "$(sqlite3 "$snap" 'PRAGMA quick_check;')" = "ok" ] || fail "$name looks damaged: the previous copy in R2 was kept"
   now=$(metric "$name" "$snap") || fail "cannot read $name (the previous copy in R2 was kept)"
-  prev=$(rclone cat "r2:$R2_BUCKET/latest/$name.metric" 2>/dev/null | tr -dc 0-9 || true)
-  if [ -n "$prev" ] && [ "$FORCE" != 1 ] && [ "${now:-0}" -lt "$prev" ]; then
+  # a failed read is not "no metric yet": only a missing object (exit 3 / 4) lets the first backup through
+  rc=0; prev=$(rclone cat "r2:$R2_BUCKET/latest/$name.metric" 2>/dev/null) || rc=$?
+  [ $rc = 0 ] || [ $rc = 3 ] || [ $rc = 4 ] || fail "cannot read the $name metric from R2 (rclone exit $rc): nothing replaced"
+  prev=$(printf '%s' "$prev" | tr -cs '0-9' ' ')
+  if [ -n "${prev// /}" ] && [ "$FORCE" != 1 ] && ! grown "$prev" "$now"; then
     kept+=("$name ($prev -> $now)")
     rm -f "$snap"
     continue
