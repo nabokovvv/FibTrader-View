@@ -85,6 +85,8 @@ class Jobs:
                 self.state.stores.get(m).compact()
                 if getattr(p, "archive_intervals", None):
                     self.state.stores.get(f"{m}-archive").compact()
+                if getattr(p, "minute_archive_intervals", None):
+                    self.state.stores.get(f"{m}-minutes-archive").compact()
             self.state.userdb.optimize()
         await asyncio.to_thread(run)
         log.info("weekly db upkeep done")

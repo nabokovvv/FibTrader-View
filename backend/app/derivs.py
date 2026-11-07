@@ -24,7 +24,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from . import limits
+from . import history, limits
 from .intervals import DAY, HOUR, INTERVALS, MINUTE
 
 log = logging.getLogger("lv.derivs")
@@ -448,9 +448,11 @@ async def _admit(ip: str):
         raise HTTPException(429, "too many requests at once")
     try:
         await asyncio.wait_for(_running.acquire(), timeout=10)
-    except TimeoutError as exc:
+    except BaseException as exc:    # timed out, or the client went away while waiting: give the slot back
         _per_ip.leave(ip)
-        raise HTTPException(503, "server is busy, try again in a moment") from exc
+        if isinstance(exc, TimeoutError):
+            raise HTTPException(503, "server is busy, try again in a moment") from exc
+        raise
 
 
 def _release(ip: str) -> None:
@@ -459,7 +461,7 @@ def _release(ip: str) -> None:
         _running.release()
 
 
-async def _derivs(request: Request, id: str) -> tuple[Derivs, str, str]:
+async def _derivs(request: Request, id: str):
     d: Derivs | None = getattr(request.app.state, "derivs", None)
     market, _, sym = id.partition(":")
     ok = d is not None and sym and ((market == "bybit" and d.provider is not None) or (market == "hl" and d.hl is not None))
@@ -472,7 +474,18 @@ async def _derivs(request: Request, id: str) -> tuple[Derivs, str, str]:
     info = await request.app.state.symbols.get(id)
     if info is None or info.id != id:
         raise HTTPException(404, "unknown symbol")
-    return d, market, info.symbol
+    return d, market, info
+
+
+def _point_ms(market: str, kind: str, interval: str) -> int:
+    """Spacing of the points one answer carries for a chart of `interval`."""
+    span = INTERVALS[interval].ms
+    if kind == "funding":
+        return HOUR                          # Bybit: 8 h, 4 h or 1 h; Hyperliquid: 1 h (the finest counts)
+    if kind == "oi" and market == "bybit":
+        iv = OI_INTERVAL.get(interval)
+        return OI_STEP[iv] if iv else span
+    return min(span, DAY)                    # liquidations, Hyperliquid OI: daily buckets on longer charts
 
 
 def _range(start: int, end: int) -> None:
@@ -482,21 +495,50 @@ def _range(start: int, end: int) -> None:
 
 @router.get("/derivs/{kind}")
 async def derivs(request: Request, kind: str, id: str = Query(..., max_length=64), interval: str = Query("1h", max_length=4),
-                 start: int = Query(..., alias="from"), end: int = Query(..., alias="to")) -> dict:
+                 start: int = Query(..., alias="from"), end: int = Query(..., alias="to"),
+                 share: str | None = Query(None, max_length=32)) -> dict:
+    """Points in [from, to). Older than the chart's fresh window: guarded like candles (history.py)."""
     if interval not in INTERVALS:
         raise HTTPException(400, "unknown interval")
     _range(start, end)
-    d, market, sym = await _derivs(request, id)
+    d, market, info = await _derivs(request, id)
+    sym = info.symbol
     if kind not in ("oi", "funding", "liq"):
         raise HTTPException(404)
+    # the fresh window counts what is actually sent (daily liquidations / OI on weekly and monthly charts, hourly
+    # funding), so a coarse chart interval cannot open years of fine points
+    point = _point_ms(market, kind, interval)
+    cutoff = history.fresh_cutoff(interval, point_ms=point)
+    reserve = min(5000, max(1, -(-(min(end, cutoff) - start) // point)))
+    gate = await history.gate(request, info, interval, cutoff, start < cutoff, reserve, share)
+    asked = start
+    floor = None
+    if gate.lock is not None:
+        window = gate.lock.window_of_range(start, end)
+        if window is not None:
+            floor = window[0]
+            start, end = max(start, floor), end if window[1] is None else min(end, window[1])
+        if window is None or start >= end:
+            history.finish(request, gate, None)
+            raise gate.lock.refuse()
     ip = request.scope.get("state", {}).get("client_ip", "unknown")
-    await _admit(ip)
+    res = None
     try:
-        if market == "hl":
-            return await _answer_hl(d, kind, sym, interval, start, end)
-        return await _answer(d, kind, sym, interval, start, end)
+        await _admit(ip)
+        try:
+            if market == "hl":
+                res = await _answer_hl(d, kind, sym, interval, start, end)
+            else:
+                res = await _answer(d, kind, sym, interval, start, end)
+        finally:
+            _release(ip)
     finally:
-        _release(ip)
+        if res is None:       # refused or failed: nothing was sent, the reservation goes back
+            history.finish(request, gate, None)
+    if gate.lock is not None and asked < start and not res.get("exhausted"):
+        gate.lock.mark(res, floor)   # cut at the window's edge: older points exist, not for this request
+    history.finish(request, gate, sum(1 for p in res.get("points", []) if p[0] < cutoff))
+    return res
 
 
 async def _answer_hl(d: Derivs, kind: str, sym: str, interval: str, start: int, end: int) -> dict:

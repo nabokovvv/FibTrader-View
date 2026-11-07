@@ -1,6 +1,7 @@
 import type { KLineData } from 'klinecharts'
 import { create } from 'zustand'
 import { api } from '../api/client'
+import { HistoryLocked, Stale, historyFetch, lockOf, setHistoryLock, untilText } from '../api/history'
 import { t } from '../i18n'
 import type { Bar, Interval } from '../lib/types'
 import { useStore } from '../state/store'
@@ -140,8 +141,13 @@ function fetchAhead(): Promise<void> {
       for (let i = 0; i < SCAN_WINDOWS; i++) {
         const now = Date.now()
         const to = Math.min(from + win.ms, maxTo())
-        const res = await api.bars(s.id, s.iv, to, win.limit)
+        // older history may be paced (this waits, one request at a time) or closed (HistoryLocked below)
+        const res = await historyFetch(() => api.bars(s.id, s.iv, to, win.limit), () => gen !== mine, false)
         if (gen !== mine) return
+        // a page cut at the edge of what may be seen: harmless if only bars before the cursor went, otherwise the
+        // replay would skip bars, so it stops here
+        const cut = lockOf(res)
+        if (cut && (res.floor ?? Infinity) > from) { setHistoryLock(cut); throw new HistoryLocked(cut) }
         const inWin = res.bars.filter((b) => b[0] > from)
         const next = inWin.filter((b) => { const e = barEnd(b[0], s.iv); return e <= now && e <= to })
         if (next.length) { buffer.push(...next.map(toKLine)); return }
@@ -155,10 +161,16 @@ function fetchAhead(): Promise<void> {
       schedule()
       useStore.setState({ notice: t('No bars for a long stretch after this point. Press → to look further.') })
     } catch (e) {
-      if (gen !== mine) return
+      if (e instanceof Stale || gen !== mine) return
       retryAt = Date.now() + 3000
       useReplay.setState({ playing: false })   // no retry loop while playing: Play / → try again
       schedule()
+      if (e instanceof HistoryLocked) {
+        useStore.setState({ notice: e.lock.kind === 'login'
+          ? t('Bar replay this far back needs signing in.')
+          : t('Bar replay this far back opens again at {time}: the history limit is used up.', { time: untilText(e.lock.until) }) })
+        return
+      }
       useStore.setState({ error: t('Replay: the next bars could not be loaded ({message}).', { message: (e as Error).message }) })
     }
   })()

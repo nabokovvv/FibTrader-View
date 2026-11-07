@@ -1,6 +1,6 @@
 """WebSocket hub: clients subscribe to bar streams (symbol+interval) and quote streams (symbols).
 
-Upstream: Bybit via push WebSocket; everything else via per-subscription pollers that re-read the
+Upstream: Bybit, Hyperliquid and biquote via push WebSockets; everything else via per-subscription pollers that re-read the
 last two bars through the candle service (which also persists newly closed bars).
 
 Abuse limits (see app/limits.py): connections per IP and in total, message size and rate, subscriptions per
@@ -78,6 +78,11 @@ class Hub:
         if "hl" in providers:
             self._bar_streams["hl"] = HLStream(self._on_bybit_bar, max_topics=self.lim.upstream_topics,
                                                cmd_rate=self.lim.upstream_cmd_rate, cmd_burst=self.lim.upstream_cmd_burst)
+        if "bq" in providers:  # biquote: one tick stream builds the bars; its quotes are read from the same ticks
+            from .bq_ws import BiquoteStream
+            bq = providers["bq"]
+            bq.stream = BiquoteStream(bq, self._on_bybit_bar, max_topics=self.lim.upstream_topics)
+            self._bar_streams["bq"] = bq.stream
 
     async def start(self) -> None:
         pass

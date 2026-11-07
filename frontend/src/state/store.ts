@@ -8,7 +8,7 @@ import { setFibDefaults, type FibConfig } from '../chart/overlays/fib'
 import { setPositionDefaults, type PositionConfig } from '../chart/overlays/position'
 
 export type Magnet = 'normal' | 'weak_magnet' | 'strong_magnet'
-export type Sheet = null | 'tools' | 'watchlist' | 'indicators' | 'search' | 'settings' | 'alerts' | 'compare' | 'share' | 'donate' | 'feedback'
+export type Sheet = null | 'tools' | 'watchlist' | 'indicators' | 'search' | 'settings' | 'alerts' | 'share' | 'donate' | 'feedback'
 export type Theme = 'dark' | 'light'
 
 export interface Settings {
@@ -205,8 +205,13 @@ function saveSettings(): Promise<unknown> {
   })
 }
 
+/** Indicators of saved layouts that no longer exist (the compare overlay was removed on 2026-11-06). */
+const REMOVED_INDICATORS = new Set(['CMP'])
+const liveIndicators = (list: IndicatorState[] | undefined) => list?.filter((i) => !REMOVED_INDICATORS.has(i.name))
+
 /** Take the account-wide layout fields from the server copy, except those this tab changed and has not saved yet. */
-function applyShared(l: Partial<LayoutState>) {
+function applyShared(raw: Partial<LayoutState>) {
+  const l = { ...raw, indicators: liveIndicators(raw.indicators) }
   const s = useStore.getState()
   const patch: Partial<AppState> = {}
   for (const k of SHARED_LAYOUT) {
@@ -325,7 +330,7 @@ export const useStore = create<AppState>((set, get) => ({
       chartType: layout.chartType ?? 'candle_solid',
       theme,
       timezone: layout.timezone ?? DEFAULT_TZ,
-      indicators: layout.indicators ?? [{ key: 'vol', name: 'VOL', main: false }],
+      indicators: liveIndicators(layout.indicators) ?? [{ key: 'vol', name: 'VOL', main: false }],
       showWatchlist: layout.showWatchlist ?? window.innerWidth >= 1100,
       activeWatchlistId: layout.activeWatchlistId ?? null,
       settings,
@@ -439,7 +444,7 @@ export const useStore = create<AppState>((set, get) => ({
       chartType: l.chartType ?? get().chartType,
       theme: l.theme ?? get().theme,
       timezone: l.timezone ?? get().timezone,
-      indicators: l.indicators ?? get().indicators,
+      indicators: liveIndicators(l.indicators) ?? get().indicators,
       selectedOverlayId: null, tool: null, sheet: null,
     })
     schedulePersist('symbolId', 'interval', 'chartType', 'theme', 'timezone', 'indicators')

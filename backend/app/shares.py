@@ -1,8 +1,9 @@
 """Shared chart links: a small JSON snapshot (symbol, interval, chart type, indicators, drawings) behind a random id.
 
 Anyone with the link can open it read-only without signing in; the chart then loads live candles like any visitor
-(GET /api/bars is public and rate-limited). Links live 90 days; an account keeps at most `shares` of them (the
-oldest makes room).
+(GET /api/bars is public and rate-limited). A guest sees the newest bars and, with the link's id, the stretch around
+the shared moment (history.py); older history needs signing in. Links live 90 days; an account keeps at most `shares`
+of them (the oldest makes room).
 """
 from __future__ import annotations
 
@@ -68,9 +69,6 @@ def clean_snapshot(st: dict) -> dict:
             raise HTTPException(400, "bad indicator parameters in the chart snapshot")
         item: dict[str, Any] = {"key": _str(str(i.get("key") or i["name"]), 64), "name": i["name"], "main": bool(i.get("main")),
                                 "calcParams": [_num(p, -1000, 1000) for p in params]}
-        opts = i.get("options")
-        if isinstance(opts, dict):
-            item["options"] = {k: _str(opts[k], 64) for k in ("symbol", "label") if isinstance(opts.get(k), str) and opts[k]}
         out["indicators"].append(item)
     draws = st.get("drawings") or []
     if not isinstance(draws, list) or len(draws) > 300:

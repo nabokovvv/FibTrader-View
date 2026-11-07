@@ -6,10 +6,12 @@
   "scripts": {
     "dev": "vite",
     "prebuild": "node scripts/patch-klinecharts.mjs",
-    "build": "tsc -b && vite build",
+    "build": "node scripts/check-i18n.mjs && node scripts/test-indicators.mjs && tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "postinstall": "node scripts/patch-klinecharts.mjs"
+    "postinstall": "node scripts/patch-klinecharts.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "test:indicators": "node scripts/test-indicators.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.118.0",
@@ -28,6 +30,7 @@
     "@vitejs/plugin-react": "^6.1.2",
     "oxlint": "^1.89.0",
     "playwright-core": "^1.57.0",
+    "rolldown": "~1.2.14",
     "tailwindcss": "^4.3.3",
     "typescript": "~7.0.2",
     "vite": "^8.3.5"

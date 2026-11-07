@@ -29,6 +29,9 @@ API = "https://api.hyperliquid.xyz/info"
 IV = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h", "1D": "1d"}
 WINDOW = 5000                      # newest bars Hyperliquid keeps per coin and interval
 ARCHIVE_INTERVALS = ("1D", "4h", "1h")
+# kept for good too, but only for the HIP-3 markets (stocks, indices, commodities, FX): crypto has its full minute
+# history on Bybit, and minutes of every market would grow the disk by ~20 GB a year. 3m is not offered in the UI.
+MINUTE_ARCHIVE_INTERVALS = ("30m", "15m", "5m", "1m")
 DEX_LABEL = {"": "Hyperliquid", "xyz": "trade.xyz", "para": "Paragon", "io": "EntropyIO"}
 SYMBOLS_TTL_S = 3600
 DEAD_DEX_RECHECK_S = 24 * 3600     # an exchange with no live markets is looked at again once a day
@@ -56,6 +59,16 @@ def split(coin: str) -> tuple[str, str]:
 class HyperliquidProvider:
     market = "hl"
     archive_intervals = frozenset(ARCHIVE_INTERVALS)
+    minute_archive_intervals = frozenset(MINUTE_ARCHIVE_INTERVALS)
+
+    @staticmethod
+    def archives_minutes(coin: str) -> bool:
+        return ":" in coin          # HIP-3 exchange ("xyz:TSLA"), not the main crypto exchange
+
+    def archived(self, coin: str) -> list[str]:
+        """Intervals the archive job keeps for this market, longest first."""
+        ivs = list(ARCHIVE_INTERVALS) + (list(MINUTE_ARCHIVE_INTERVALS) if self.archives_minutes(coin) else [])
+        return sorted(ivs, key=lambda k: -INTERVALS[k].ms)
 
     def __init__(self, client: httpx.AsyncClient | None = None):
         self.native_intervals = frozenset(IV)
@@ -255,6 +268,10 @@ class HyperliquidProvider:
                 if p is not None and (dex or not k.startswith("@")):  # "@123" = spot pairs on the main exchange
                     out[k] = p
         return out
+
+    def cached_contexts(self, dex: str) -> tuple[float, dict[str, dict]] | None:
+        """(fetched at, coin -> asset context) of the last load, without any request."""
+        return self._ctx.get(dex)
 
     async def contexts(self, dex: str, max_age_s: float, background: bool = False) -> dict[str, dict]:
         hit = self._ctx.get(dex)

@@ -9,11 +9,12 @@ from .markets.base import Provider, SymbolInfo
 
 log = logging.getLogger("lv.symbols")
 
-MARKET_ORDER = ["bybit", "us", "moex", "yahoo", "hl", "bybit-spot"]
+MARKET_ORDER = ["bybit", "us", "moex", "yahoo", "hl", "bq", "bybit-spot"]
 MARKET_LABEL = {"bybit": "Bybit Perp", "bybit-spot": "Bybit Spot", "us": "US Stocks", "moex": "MOEX", "yahoo": "Global",
-                "hl": "Hyperliquid"}
-# Alias priority: earlier markets win when the same alias is declared twice (exchange data before Hyperliquid perps).
-ALIAS_PRIORITY = ["yahoo", "moex", "us", "bybit", "bybit-spot", "hl"]
+                "hl": "Hyperliquid", "bq": "CFD"}
+# Alias priority: earlier markets win when the same alias is declared twice (exchange data before Hyperliquid perps;
+# biquote CFDs last, so the names people already use keep opening what they opened before).
+ALIAS_PRIORITY = ["yahoo", "moex", "us", "bybit", "bybit-spot", "hl", "bq"]
 
 
 class SymbolRegistry:
@@ -137,6 +138,8 @@ class SymbolRegistry:
                                 score -= 10   # "BTC" should not open with BTCD (dominance) before BTCUSDT
                             if not s.extra.get("primary", True):
                                 score -= 5    # the same stock on a smaller Hyperliquid exchange
+                    elif s.market == "bq":
+                        score -= 6    # CFDs after Hyperliquid (its history is much longer): GOLD, TSLA open HL first
                     scored.append((score, -mi, s))
                     seen.add(s.id)
         scored.sort(key=lambda t: (-t[0], -t[1], t[2].symbol))

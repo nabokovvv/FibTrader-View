@@ -1,4 +1,4 @@
-import { Bell, ChartArea, ChartCandlestick, ChartLine, ChartNoAxesColumn, ChevronDown, Ellipsis, GitCompareArrows, LayoutGrid, Moon, PanelRight, Rewind, Search, Settings, Share2, SlidersHorizontal, Sun } from 'lucide-react'
+import { Bell, ChartArea, ChartCandlestick, ChartLine, ChartNoAxesColumn, ChevronDown, Ellipsis, LayoutGrid, Moon, PanelRight, Rewind, Search, Settings, Share2, SlidersHorizontal, Sun } from 'lucide-react'
 import { alertMarkets, useAlerts } from '../state/alerts'
 import { serverFeatures } from '../auth/session'
 import { t } from '../i18n'
@@ -78,12 +78,6 @@ export function TopBar({ compact, narrow = false }: { compact: boolean; narrow?:
       )}
 
       {!compact && <div className="mx-1 h-5 w-px bg-line" />}
-
-      {!compact && (
-        <button className="tb-btn" onClick={() => setSheet('compare')} title={t('Compare with another symbol')}>
-          <GitCompareArrows />
-        </button>
-      )}
 
       {compact || narrow ? (
         <IntervalMenu interval={interval} onPick={setInterval} />

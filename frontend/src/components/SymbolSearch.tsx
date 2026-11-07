@@ -5,10 +5,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { MARKET_LABEL, tickerOf, type SymbolInfo } from '../lib/types'
 import { useStore } from '../state/store'
-import { addCompare } from '../chart/indicators/compare'
 import { MarketBadge, Modal, symName } from './ui'
 
-const ALL_FILTERS = ['all', 'bybit', 'us', 'moex', 'yahoo', 'hl', 'bybit-spot'] as const
+const ALL_FILTERS = ['all', 'bybit', 'us', 'moex', 'yahoo', 'hl', 'bq', 'bybit-spot'] as const
 type Filter = (typeof ALL_FILTERS)[number]
 /** Only the markets this server serves (the public instance has Bybit only). */
 const marketFilters = (): Filter[] => {
@@ -21,7 +20,7 @@ const marketScope = (): Scope => {
   const on = availableMarkets()
   if (!on.length) return 'all'
   if (on.every((m) => m.startsWith('bybit'))) return 'crypto'
-  return on.every((m) => m.startsWith('bybit') || m === 'hl') ? 'hl' : 'all'
+  return on.every((m) => m.startsWith('bybit') || m === 'hl' || m === 'bq') ? 'hl' : 'all'
 }
 const PLACEHOLDER: Record<Scope, string> = {
   crypto: 'Ticker or coin: BTC, ETH, SOL, PEPE…',
@@ -40,7 +39,7 @@ const INTRO: Record<Scope, string> = {
 }
 
 /** Symbol search dialog. In "add" mode results get a + button that adds to the active watchlist. */
-export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; mode?: 'open' | 'add' | 'compare' }) {
+export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; mode?: 'open' | 'add' }) {
   const [q, setQ] = useState('')
   const [results, setResults] = useState<SymbolInfo[]>([])
   const [loading, setLoading] = useState(false)
@@ -74,7 +73,6 @@ export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; 
 
   const pick = (s: SymbolInfo) => {
     if (mode === 'add') { void addToWatchlist(s.id); return }
-    if (mode === 'compare') { addCompare(s); onClose(); return }
     setSymbol(s)
     onClose()
   }
@@ -98,7 +96,7 @@ export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; 
   const query = q.trim()
 
   return (
-    <Modal title={mode === 'add' ? t('Add to “{name}”', { name: activeWl ? wlName(activeWl.name) : t('Watchlist') }) : mode === 'compare' ? t('Compare with…') : t('Symbol search')} onClose={onClose} width={640}>
+    <Modal title={mode === 'add' ? t('Add to “{name}”', { name: activeWl ? wlName(activeWl.name) : t('Watchlist') }) : t('Symbol search')} onClose={onClose} width={640}>
       <div className="sticky top-0 z-10 border-b border-line bg-panel px-4 pb-3 pt-3">
         <div className="field h-11 px-3">
           <Search className="h-4 w-4 shrink-0 text-muted" />
@@ -168,6 +166,11 @@ export function SymbolSearch({ onClose, mode = 'open' }: { onClose: () => void; 
             {availableMarkets().includes('hl') && (
               <p className="mt-3 text-[12px] leading-5 text-faint">
                 {t('HL marks Hyperliquid perpetuals. They trade around the clock, so prices can differ from the exchange price of the stock, index or commodity.')}
+              </p>
+            )}
+            {availableMarkets().includes('bq') && (
+              <p className="mt-2 text-[12px] leading-5 text-faint">
+                {t('CFD marks prices of a CFD broker from biquote.io: they follow the market during its trading hours. Their intraday history is short for now and grows every day.')}
               </p>
             )}
           </li>

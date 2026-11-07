@@ -29,7 +29,8 @@ DEFAULT_TIMEZONE = os.getenv("LV_TIMEZONE", "Europe/Nicosia")
 
 # Markets to serve, comma separated; empty = every market that is configured.
 # The public instance runs with LV_MARKETS=bybit,bybit-spot,hl: no exchange stock/index data (it may not be
-# redistributed); stocks, indices and commodities come as Hyperliquid perpetuals ("hl").
+# redistributed); stocks, indices and commodities come as Hyperliquid perpetuals ("hl") and, with "bq", as CFD
+# prices from biquote.io (whose terms allow showing them).
 MARKETS = [m.strip() for m in os.getenv("LV_MARKETS", "").split(",") if m.strip()]
 
 # Auth: "none" = private instance, every request is the single local user;
@@ -48,9 +49,13 @@ MAINTENANCE = os.getenv("LV_MAINTENANCE", "1" if AUTH == "supabase" else "0").st
 # Force the public abuse-limit profile without Supabase auth (local testing only)
 PROFILE = os.getenv("LV_PROFILE", "").strip().lower()
 
+# Accounts (Supabase user ids, comma-separated) the older-history guard leaves alone: an emergency exception only
+HISTORY_UNLIMITED = frozenset(x.strip() for x in os.getenv("LV_HISTORY_UNLIMITED", "").split(",") if x.strip())
+HISTORY_DB = DATA_DIR / "history.sqlite"
+
 # Polling cadence (seconds) for providers without a push stream.
-POLL_BARS_S = {"us": 5, "moex": 5, "yahoo": 30, "hl": 20}   # hl: only 2h / 1W / 1M (the rest is pushed)
-POLL_QUOTES_S = {"us": 10, "moex": 10, "yahoo": 60, "hl": 5}
+POLL_BARS_S = {"us": 5, "moex": 5, "yahoo": 30, "hl": 20, "bq": 15}   # hl, bq: only derived intervals (the rest is pushed)
+POLL_QUOTES_S = {"us": 10, "moex": 10, "yahoo": 60, "hl": 5, "bq": 2}   # bq: read from the stream
 
 
 def market_enabled(market: str) -> bool:
@@ -80,3 +85,6 @@ LIQUIDATIONS = os.getenv("LV_LIQUIDATIONS", "1").strip() in ("1", "true", "yes")
 # Hyperliquid: keep 1h / 4h / 1D bars for good (the API serves only the newest 5000) and record open interest —
 # on by default where the "hl" market is enabled
 HL_ARCHIVE = os.getenv("LV_HL_ARCHIVE", "1").strip() in ("1", "true", "yes")
+# biquote.io: keep 5m … 1D bars of its 70 instruments for good (the API serves only a short window) — on by default
+# where the "bq" market is enabled
+BQ_ARCHIVE = os.getenv("LV_BQ_ARCHIVE", "1").strip() in ("1", "true", "yes")

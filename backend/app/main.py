@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, config, limits, plugins
+from . import auth, config, history, limits, plugins
 from .guard import Guard
 from .limits import Busy
 from .candles.service import CandleService
@@ -59,13 +59,16 @@ def build_providers() -> dict[str, Provider]:
     if on("hl"):
         from .markets.hyperliquid import HyperliquidProvider
         providers["hl"] = HyperliquidProvider()
+    if on("bq"):
+        from .markets.biquote import BiquoteProvider
+        providers["bq"] = BiquoteProvider()
     if on("us"):
         if config.has_alpaca():
             from .markets.alpaca import AlpacaProvider
             providers["us"] = AlpacaProvider()
         else:
             log.warning("Alpaca keys missing: US stocks market disabled")
-    unknown = set(config.MARKETS) - {"bybit", "bybit-spot", "moex", "yahoo", "us", "hl"}
+    unknown = set(config.MARKETS) - {"bybit", "bybit-spot", "moex", "yahoo", "us", "hl", "bq"}
     if unknown:
         log.warning("LV_MARKETS: unknown markets ignored: %s", ", ".join(sorted(unknown)))
     return providers
@@ -105,11 +108,13 @@ async def lifespan(app: FastAPI):
         bot = TelegramBot(config.TELEGRAM_BOT_TOKEN, lambda fn, *a: udb_call(app.state.userdb, fn, *a))
         await bot.start()
     app.state.telegram = bot
+    from .sentiment import Sentiment
+    app.state.sentiment = Sentiment()
     from .alerts import AlertEngine, build_feeds
-    app.state.alerts = AlertEngine(app.state.userdb, build_feeds(providers), app.state.symbols, bot)
+    app.state.alerts = AlertEngine(app.state.userdb, build_feeds(providers), app.state.symbols, bot, app.state.sentiment)
     from .feedback import FeedbackWorker
     app.state.feedback = FeedbackWorker(app.state.userdb, bot)
-    app.state.derivs = app.state.liq = app.state.hl_oi = app.state.hl_archive = None
+    app.state.derivs = app.state.liq = app.state.hl_oi = app.state.hl_archive = app.state.bq_archive = None
     if "bybit" in providers or "hl" in providers:
         from .derivs import DerivStore, Derivs, HLOIRecorder, LiqRecorder
         app.state.derivs = Derivs(DerivStore(config.CANDLES_DIR / "derivs.sqlite"), providers.get("bybit"), providers.get("hl"))
@@ -120,15 +125,23 @@ async def lifespan(app: FastAPI):
     if config.HL_ARCHIVE and "hl" in providers:
         from .hl_archive import HLArchiver
         app.state.hl_archive = HLArchiver(providers["hl"], app.state.candles)
+    if config.BQ_ARCHIVE and "bq" in providers:
+        from .bq_archive import BQArchiver
+        app.state.bq_archive = BQArchiver(providers["bq"], app.state.candles)
     from .jobs import Jobs
     app.state.jobs = Jobs(app.state)
+    app.state.history = None
+    if lp.history_quota:
+        app.state.history = history.HistoryQuota(config.HISTORY_DB, unlimited=config.HISTORY_UNLIMITED)
+        await app.state.history.start()
     plugins.startup(app.state)
     await app.state.hub.start()
     await app.state.alerts.start()
     await app.state.feedback.start()
+    await app.state.sentiment.start()
     if app.state.liq:
         await app.state.liq.start()
-    for job in (app.state.hl_oi, app.state.hl_archive):
+    for job in (app.state.hl_oi, app.state.hl_archive, app.state.bq_archive):
         if job:
             await job.start()
     app.state.jobs.start()
@@ -141,11 +154,14 @@ async def lifespan(app: FastAPI):
         app.state.jobs.stop()
         await app.state.alerts.stop()
         await app.state.feedback.stop()
+        await app.state.sentiment.stop()
         if app.state.liq:
             await app.state.liq.stop()
-        for job in (app.state.hl_oi, app.state.hl_archive):
+        for job in (app.state.hl_oi, app.state.hl_archive, app.state.bq_archive):
             if job:
                 await job.stop()
+        if app.state.history:
+            await app.state.history.stop()
         if app.state.derivs:
             app.state.derivs.store.close()
         if app.state.telegram:
@@ -167,6 +183,11 @@ app = FastAPI(title="FibTrader View", lifespan=lifespan, docs_url=None if config
               redoc_url=None, openapi_url=None if config.AUTH == "supabase" else "/openapi.json")
 app.state.limits = _Limits()
 app.add_middleware(Guard)
+
+
+@app.exception_handler(history.Refused)
+async def _history_refused(request: Request, exc: history.Refused) -> JSONResponse:
+    return JSONResponse(exc.body(), status_code=exc.status, headers=exc.headers())
 
 
 # ------------------------------------------------------------------------ API
@@ -230,12 +251,15 @@ async def symbol(request: Request, id: str) -> dict:
     return info.to_dict()
 
 
-MIN_TS = 1_230_768_000_000  # 2009-01-01: nothing we serve is older
+MIN_TS = 946_684_800_000  # 2000-01-01: nothing we serve is older (Dukascopy FX history starts in 2003)
 
 
 @app.get("/api/bars")
 async def bars(request: Request, id: str = Query(..., max_length=64), interval: str = Query("1h", max_length=4),
-               to: int | None = None, limit: int = Query(500, ge=1, le=2000)) -> dict:
+               to: int | None = None, limit: int = Query(500, ge=1, le=2000),
+               share: str | None = Query(None, max_length=32)) -> dict:
+    """Bars before `to` (the newest without it). Older history on the public instance: see history.py
+    (`share`: a shared chart's id, opens its moment to a guest)."""
     if interval not in INTERVALS:
         raise HTTPException(400, f"unknown interval '{interval}'")
     if to is not None and not (MIN_TS <= to <= int(time.time() * 1000) + 2 * 86_400_000):
@@ -246,10 +270,18 @@ async def bars(request: Request, id: str = Query(..., max_length=64), interval: 
     ip = request.scope.get("state", {}).get("client_ip", "unknown")
     request.app.state.last_user_bars = time.monotonic()  # the prewarm job waits while people use the site
     lim = request.app.state.limits
+    limit = min(limit, lim.profile.bars_page)
     if not lim.bars_rate.allow(ip):
         raise HTTPException(429, "too many chart requests, slow down")
+    cutoff = history.fresh_cutoff(interval)
+    gate = await history.gate(request, info, interval, cutoff, to is not None, limit, share)
+    window = gate.lock.window_for(to) if gate.lock is not None else None
+    if gate.lock is not None and window is None:
+        raise gate.lock.refuse()
     if not lim.bars_ip.enter(ip):
+        history.finish(request, gate, None)
         raise HTTPException(429, "too many chart requests at once")
+    page = None
     try:
         try:
             await asyncio.wait_for(lim.bars_global.acquire(), timeout=lim.profile.bars_wait_s)
@@ -270,7 +302,22 @@ async def bars(request: Request, id: str = Query(..., max_length=64), interval: 
         raise HTTPException(502, "data source error") from exc
     finally:
         lim.bars_ip.leave(ip)
-    return {"id": info.id, "interval": interval, "native": page.native, "more": page.more, "bars": page.bars}
+        if page is None:      # failed or cancelled: nothing was sent, the reservation goes back
+            history.finish(request, gate, None)
+    answer = {"id": info.id, "interval": interval, "native": page.native, "more": page.more, "bars": page.bars}
+    lock = gate.lock
+    if lock is None and gate.ticket is None and page.bars and page.bars[0][0] < cutoff:
+        # the newest page of a sparse, session or long-closed market can reach back too: cut it or charge it
+        lock = await history.after(request, info, interval, cutoff, sum(1 for b in page.bars if b[0] < cutoff), share)
+        window = lock.window_for(None) if lock is not None else None
+    if lock is not None:
+        floor = window[0] if window is not None else int(time.time() * 1000)
+        kept = [b for b in page.bars if b[0] >= floor]
+        if len(kept) < len(page.bars):   # cut at the window's edge: more exists, but not for this request
+            answer.update(bars=kept, more=False)
+            lock.mark(answer, floor)
+    history.finish(request, gate, sum(1 for b in answer["bars"] if b[0] < cutoff))
+    return answer
 
 
 @app.get("/api/stats")
@@ -287,10 +334,11 @@ from .realtime.routes import router as realtime_router  # noqa: E402
 from .alerts import router as alerts_router  # noqa: E402
 from .derivs import router as derivs_router  # noqa: E402
 from .feedback import router as feedback_router  # noqa: E402
+from .sentiment import router as sentiment_router  # noqa: E402
 from .shares import router as shares_router  # noqa: E402
 
 app.include_router(userdata_router, prefix="/api")
-for _router in (alerts_router, derivs_router, feedback_router, shares_router):
+for _router in (alerts_router, derivs_router, feedback_router, sentiment_router, shares_router):
     app.include_router(_router, prefix="/api")
 app.include_router(realtime_router)
 for _router in plugins.routers():  # before the SPA catch-all below

@@ -24,6 +24,10 @@ MAX_LIMIT = 1000
 RETRY_CODES = {10000, 10002, 10006, 10016}
 
 
+# Bybit `symbolType` of linear perpetuals -> our symbol type (anything else is crypto)
+SYMBOL_TYPE = {"stock": "stock", "etf": "etf", "commodity": "commodity", "forex": "forex"}
+
+
 class BybitProvider:
     def __init__(self, category: str = "linear", client: httpx.AsyncClient | None = None):
         assert category in ("linear", "spot")
@@ -53,7 +57,8 @@ class BybitProvider:
                     if it.get("contractType") != "LinearPerpetual" or quote not in ("USDT", "USDC"):
                         continue
                     name = f"{it['baseCoin']} / {quote} Perpetual"
-                    sym_type = "crypto"
+                    # stock / ETF / commodity / forex perpetuals are tradfi; "" and "innovation" are crypto
+                    sym_type = SYMBOL_TYPE.get(str(it.get("symbolType") or "").lower(), "crypto")
                 else:
                     if quote not in ("USDT", "USDC", "BTC", "ETH", "EUR"):
                         continue

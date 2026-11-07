@@ -335,7 +335,7 @@ async def test_unknown_ids_never_reach_the_upstream(tmp_path, hl):
         await _derivs(req, "hl:xyz:NOPE")
     assert e.value.status_code == 404
     assert all(c["type"] != "fundingHistory" for c in hl.fake.calls[calls:])
-    assert (await _derivs(req, "hl:xyz:TSLA"))[2] == "xyz:TSLA"
+    assert (await _derivs(req, "hl:xyz:TSLA"))[2].symbol == "xyz:TSLA"
 
 
 async def test_one_broken_exchange_does_not_hide_the_others(tmp_path, hl):
@@ -392,3 +392,25 @@ async def test_reconnect_does_not_resubscribe_a_topic_dropped_meanwhile(monkeypa
     gone.set()
     await s.stop()
     run.cancel()
+
+
+async def test_minutes_are_archived_for_hip3_markets_only(tmp_path, hl, monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "CANDLES_DIR", tmp_path)
+    svc, stores = _service(tmp_path, hl)
+    assert svc.store_for(hl, "1m", "xyz:TSLA").path.name == "hl-minutes-archive.sqlite"
+    assert svc.store_for(hl, "1m", "BTC").path.name == "hl.sqlite"
+    assert svc.store_for(hl, "3m", "xyz:TSLA").path.name == "hl.sqlite"          # 3m is not archived
+    assert svc.store_for(hl, "1h", "BTC").path.name == "hl-archive.sqlite"
+    assert hl.archived("BTC") == ["1D", "4h", "1h"]
+    assert hl.archived("xyz:TSLA") == ["1D", "4h", "1h", "30m", "15m", "5m", "1m"]
+    arch = HLArchiver(hl, svc)
+    assert await arch.update("xyz:TSLA", "1m") > 0
+    assert stores.get("hl-minutes-archive").coverage("xyz:TSLA", "1m").exhausted
+    before = stores.get("hl-minutes-archive").count("xyz:TSLA", "1m")
+    retention(stores, {"hl": hl}, now=time.time() + 400 * 86400)
+    emergency(stores, {"hl": hl})
+    assert stores.get("hl-minutes-archive").count("xyz:TSLA", "1m") == before
+    info = await hl.resolve("xyz:TSLA")
+    page = await svc.get_bars(info, "1m", None, 100)
+    assert len(page.bars) == 100

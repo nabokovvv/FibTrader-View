@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { api, type Alert } from '../api/client'
+import { api, type Alert, type AlertMetric } from '../api/client'
 import { serverFeatures } from '../auth/session'
 import { t } from '../i18n'
 import { fmtPrice } from '../components/ui'
@@ -12,9 +12,10 @@ export interface AlertDraft { drawingId: string; drawingName: string; level?: nu
 interface AlertsState {
   alerts: Alert[]
   telegram: boolean
+  metrics: AlertMetric[]     // what this server can watch (older servers: price only)
   loaded: boolean
   draft: AlertDraft | null
-  preset: number | null      // price picked on the chart (crosshair bell / right-click), used once by the form
+  preset: { value: number; metric: AlertMetric } | null  // picked on the chart (crosshair bell / right-click), used once by the form
   load: () => Promise<void>
   setDraft: (d: AlertDraft | null) => void
 }
@@ -22,30 +23,60 @@ interface AlertsState {
 export const useAlerts = create<AlertsState>((set) => ({
   alerts: [],
   telegram: false,
+  metrics: ['price'],
   loaded: false,
   draft: null,
   preset: null,
   load: async () => {
     const r = await api.alerts()
-    set({ alerts: r.alerts, telegram: r.telegram, loaded: true })
+    set({ alerts: r.alerts, telegram: r.telegram, metrics: r.metrics ?? ['price'], loaded: true })
   },
   setDraft: (d) => set({ draft: d }),
 }))
 
-/** Open the alert form for the current symbol with `price` filled in. */
-export function openAlertAt(price: number) {
-  if (!Number.isFinite(price) || price <= 0) return
-  useAlerts.setState({ draft: null, preset: price })
+/** Open the alert form for the current symbol with `value` of `metric` (the price by default) filled in. */
+export function openAlertAt(value: number, metric: AlertMetric = 'price') {
+  if (!Number.isFinite(value) || ((metric === 'price' || metric === 'oi') && value <= 0)) return
+  useAlerts.setState({ draft: null, preset: { value, metric } })
   useStore.getState().setSheet('alerts')
 }
+
+/** Indicator panels that can carry an alert, and on what (funding / OI: perpetuals only). */
+export const INDICATOR_METRIC: Record<string, AlertMetric> = { FUNDING: 'funding', OI: 'oi', FNG: 'fng', YTS: 'yt' }
 
 /** Markets with alerts on this server (empty = feature off). */
 export const alertMarkets = () => serverFeatures().alerts
 
 export const COND_LABEL: Record<Alert['cond'], string> = { cross: 'Crossing', up: 'Crossing up', down: 'Crossing down' }
 
-export function alertTarget(a: Pick<Alert, 'level' | 'line'>, precision?: number): string {
-  return a.line ? t('your line') : fmtPrice(a.level, precision)
+export const METRIC_LABEL: Record<AlertMetric, string> = {
+  price: 'Price', funding: 'Funding rate', oi: 'Open interest', fng: 'Fear & Greed Index', yt: 'Influencer pressure',
+}
+/** Funding and open interest exist for perpetuals only; the daily series are the same on every symbol. */
+export const MARKET_METRICS: AlertMetric[] = ['fng', 'yt']
+
+/** A value of a metric as shown to the user (funding in %, the others plain). */
+export function fmtMetric(metric: AlertMetric | undefined, v: number | null | undefined, precision?: number): string {
+  if (v == null || !Number.isFinite(v)) return '—'
+  switch (metric ?? 'price') {
+    case 'funding': return `${v.toFixed(4)}%`
+    case 'oi': return v.toLocaleString('en-US', { maximumFractionDigits: 0 })
+    case 'fng': return v.toFixed(0)
+    case 'yt': return v.toFixed(1)
+    default: return fmtPrice(v, precision)
+  }
+}
+
+export function alertTarget(a: Pick<Alert, 'level' | 'line' | 'metric'>, precision?: number): string {
+  return a.line ? t('your line') : fmtMetric(a.metric, a.level, precision)
+}
+
+/** "BTCUSDT: price crossed up 100" / "Fear & Greed Index crossed down 25" */
+export function alertText(a: Alert): string {
+  const m = a.metric ?? 'price'
+  const cond = t(COND_LABEL[a.cond]).toLowerCase()
+  if (MARKET_METRICS.includes(m)) return t('{what}: {cond} {target}', { what: t(METRIC_LABEL[m]), cond, target: alertTarget(a) })
+  return t('{name}: {what} {cond} {target}', { name: idTicker(a.symbol), what: t(METRIC_LABEL[m]).toLowerCase(), cond, target: alertTarget(a) })
 }
 
 /**
@@ -62,10 +93,8 @@ export function startAlertWatcher(): () => void {
     try { await st.load() } catch { return }
     const fired = useAlerts.getState().alerts.filter((a) => armed.has(a.id) && !a.active && a.fired_at)
     if (fired.length) {
-      const a = fired[0]
-      const name = idTicker(a.symbol)
       const more = fired.length > 1 ? ` (+${fired.length - 1})` : ''
-      useStore.setState({ notice: `🔔 ${t('{name}: price {cond} {target}', { name, cond: t(COND_LABEL[a.cond]).toLowerCase(), target: alertTarget(a) })}${more}` })
+      useStore.setState({ notice: `🔔 ${alertText(fired[0])}${more}` })
     }
   }
   void check()

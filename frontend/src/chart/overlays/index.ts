@@ -3,6 +3,7 @@ import { EXTRA_OVERLAYS } from './extra'
 import { fibRetracement } from './fib'
 import { longPosition, shortPosition } from './position'
 import { measure } from './measure'
+import { fixedRangeVolumeProfile } from './volumeProfile'
 import { ICONS, type Icon } from './icons'
 export type { Icon }
 
@@ -37,6 +38,7 @@ const TOOL_LIST: ToolMeta[] = [
   { name: 'gannBox', label: 'Gann box', group: 'Fibonacci' },
   { name: 'longPosition', label: 'Long position', group: 'Positions' },
   { name: 'shortPosition', label: 'Short position', group: 'Positions' },
+  { name: 'fixedRangeVolumeProfile', label: 'Fixed range volume profile', group: 'Positions' },
   { name: 'rect', label: 'Rectangle', group: 'Shapes' },
   { name: 'circle', label: 'Ellipse', group: 'Shapes' },
   { name: 'triangle', label: 'Triangle', group: 'Shapes' },
@@ -68,4 +70,5 @@ export function registerCustomOverlays() {
   registerOverlay(longPosition as Parameters<typeof registerOverlay>[0])
   registerOverlay(measure)
   registerOverlay(shortPosition as Parameters<typeof registerOverlay>[0])
+  registerOverlay(fixedRangeVolumeProfile)
 }

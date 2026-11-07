@@ -21,6 +21,20 @@ def _db(tmp_path) -> UserDB:
 
 
 # --------------------------------------------------------------------- schema
+def test_v2_alerts_become_price_alerts(tmp_path):
+    p = tmp_path / "app.sqlite"
+    c = sqlite3.connect(p)
+    from app.userdata.db import SCHEMA_V1
+    from app.userdata.extra import SCHEMA_V2
+    c.executescript(SCHEMA_V1 + SCHEMA_V2 + "PRAGMA user_version=2;")
+    c.execute("INSERT INTO alerts(user_id, symbol, cond, level, created_at) VALUES('u','bybit:BTCUSDT','up',100,1)")
+    c.commit()
+    c.close()
+    db = UserDB(p)
+    assert [(a["metric"], a["level"]) for a in db.alerts("u")] == [("price", 100.0)]
+    assert db.active_alerts()[0]["metric"] == "price"
+
+
 def test_v1_database_gets_v2_tables(tmp_path):
     p = tmp_path / "app.sqlite"
     c = sqlite3.connect(p)
@@ -32,7 +46,7 @@ def test_v1_database_gets_v2_tables(tmp_path):
     db = UserDB(p)
     assert db.settings("u") == {"k": 1}
     assert db.alerts("u") == []
-    assert db._conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert db._conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 # --------------------------------------------------------------------- alerts
@@ -340,3 +354,123 @@ def test_liquidation_history_never_double_counts(tmp_path):
     st.import_liq_history("BTCUSDT", D, [(T - 20 * D + k * D, 100.0, 200.0) for k in range(20)], T - 20 * D, T)
     assert dict((r[0], r[1]) for r in st.liq("BTCUSDT", T - 5 * D, T, D))[T - 4 * D] == 100.0
     assert st.drop_liq_before(T) == 1
+
+
+# ------------------------------------------------------------ alerts on metrics
+class FakeValuesFeed:
+    def __init__(self, seq):
+        self.seq = list(seq)
+        self.asked: list[set] = []
+
+    async def prices(self, wanted=None):
+        raise AssertionError("values() should be used")
+
+    async def values(self, wanted, metrics):
+        self.asked.append(set(metrics))
+        return self.seq.pop(0)
+
+
+class FakeSentiment:
+    def __init__(self):
+        self.fng = [[0, 30.0]]
+        self.yt = [[0, -1.0]]
+
+    async def yt_points(self):
+        return self.yt
+
+
+async def test_funding_oi_and_market_wide_alerts(tmp_path):
+    db = _db(tmp_path)
+    kw = dict(max_active=10, max_total=20)
+    db.create_alert_checked("u", "bybit:BTCUSDT", "up", 0.01, None, None, "", metric="funding", **kw)
+    db.create_alert_checked("u", "bybit:BTCUSDT", "down", 1000.0, None, None, "", metric="oi", **kw)
+    db.create_alert_checked("u", "bybit:ETHUSDT", "down", 25.0, None, None, "", metric="fng", **kw)
+    db.create_alert_checked("u", "bybit:ETHUSDT", "cross", 0.0, None, None, "", metric="yt", **kw)
+    db.tg_new_code("u", "code12345", "ru", 60_000)
+    db.tg_claim("code12345", 9)
+    sent = FakeSentiment()
+    feed = FakeValuesFeed([{"BTCUSDT": {"price": 1, "funding": 0.005, "oi": 1200}},
+                           {"BTCUSDT": {"price": 1, "funding": 0.02, "oi": 1100}},
+                           {"BTCUSDT": {"price": 1, "funding": 0.02, "oi": 900}}])
+    bot = FakeBot()
+    eng = AlertEngine(db, {"bybit": feed}, FakeSymbols(), bot, sent)
+    assert await eng.tick() == []                                   # baselines
+    assert feed.asked[0] == {"funding", "oi"}                       # no price asked when no price alert
+    hits = await eng.tick()
+    assert [a["metric"] for a, _ in hits] == ["funding"]
+    assert "Фандинг пересёк вверх 0.0100%" in bot.sent[-1][1]
+    sent.fng = [[0, 30.0], [1, 20.0]]                               # a new day: F&G 30 → 20 crosses 25 down
+    sent.yt = [[0, -1.0], [1, 0.5]]                                 # pressure −1 → 0.5 crosses zero
+    hits = await eng.tick()
+    assert sorted(a["metric"] for a, _ in hits) == ["fng", "oi", "yt"]
+    texts = "\n".join(t for _, t in bot.sent)
+    assert "Индекс страха и жадности" in texts and "Давление инфлюенсеров пересекло" in texts
+
+
+def test_alert_metric_levels_are_checked():
+    import pytest
+    from fastapi import HTTPException
+
+    from app.alerts import check_level
+    check_level("funding", -0.05)
+    check_level("yt", -20.0)
+    check_level("fng", 0)
+    for metric, lvl in (("price", 0), ("oi", -1), ("fng", 101), ("funding", 150), ("nope", 1)):
+        with pytest.raises(HTTPException):
+            check_level(metric, lvl)
+
+
+async def test_bybit_feed_values_from_one_tickers_call():
+    from app.alerts import BybitFeed
+
+    class P:
+        calls = 0
+
+        async def tickers(self):
+            P.calls += 1
+            return [{"symbol": "BTCUSDT", "lastPrice": "100", "fundingRate": "0.0001", "openInterest": "5000"},
+                    {"symbol": "ETHUSDT", "lastPrice": "10", "fundingRate": "", "openInterest": "x"},
+                    {"lastPrice": "1"}]
+
+    v = await BybitFeed(P()).values({"BTCUSDT"}, {"price", "funding", "oi"})
+    assert v["BTCUSDT"] == {"price": 100.0, "funding": 0.01, "oi": 5000.0} and v["ETHUSDT"] == {"price": 10.0}
+    assert await BybitFeed(P()).prices({"BTCUSDT"}) == {"BTCUSDT": 100.0, "ETHUSDT": 10.0}
+    assert P.calls == 2
+
+
+async def test_hyperliquid_context_refresh_never_blocks_the_tick():
+    import asyncio as aio
+    import time as tm
+
+    from app.alerts import HyperliquidFeed
+
+    class P:
+        def __init__(self):
+            self.snap = None
+            self.gate = aio.Event()
+            self.loads = 0
+
+        async def mids(self, wanted):
+            return {"BTC": 100.0}
+
+        def cached_contexts(self, dex):
+            return self.snap
+
+        async def contexts(self, dex, max_age, background=False):
+            self.loads += 1
+            await self.gate.wait()                     # a slow / waiting refresh
+            self.snap = (tm.time(), {"BTC": {"funding": "0.0000125", "openInterest": "10"}})
+
+    p = P()
+    feed = HyperliquidFeed(p)
+    v = await aio.wait_for(feed.values({"BTC"}, {"price", "funding", "oi"}), 1)
+    assert v == {"BTC": {"price": 100.0}}              # no snapshot yet: price only, no waiting
+    await aio.sleep(0)
+    await feed.values({"BTC"}, {"funding"})
+    await aio.sleep(0)
+    assert p.loads == 1                                # one refresh in flight, not one per tick
+    p.gate.set()
+    await aio.sleep(0)
+    await aio.sleep(0)
+    v = await feed.values({"BTC"}, {"funding", "oi"})
+    assert v["BTC"]["funding"] == pytest.approx(0.00125) and v["BTC"]["oi"] == 10.0

@@ -75,6 +75,11 @@ export const ICONS: Record<string, Icon> = {
     soft: 'M4 10 H20 V20.5 H4 Z',
     f: 'M12 18.2 l3.6 -4.2 h-2.3 v-2.4 h-2.6 v2.4 h-2.3 z',
   },
+  // fixed range volume profile: the stretch's edges and rows of volume growing from the left edge
+  fixedRangeVolumeProfile: {
+    d: 'M4 3.5 V20.5 M20 3.5 V20.5 M4 12 H20',
+    soft: 'M4 5 H9 V8 H4 Z M4 8.5 H14 V11 H4 Z M4 13 H17 V15.5 H4 Z M4 16 H11 V19 H4 Z',
+  },
   // Shapes
   rect: { d: poly([[4, 5], [20, 5], [20, 19], [4, 19], [4, 5]], [true, false, true, false, true]), soft: 'M4 5 H20 V19 H4 Z' },
   circle: { d: `M12 12 m-9 0 a9 6.5 0 1 0 18 0 a9 6.5 0 1 0 -18 0`, soft: 'M12 12 m-9 0 a9 6.5 0 1 0 18 0 a9 6.5 0 1 0 -18 0', f: 'M12 12 m-1.4 0 a1.4 1.4 0 1 0 2.8 0 a1.4 1.4 0 1 0 -2.8 0' },

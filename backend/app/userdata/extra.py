@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS shares(
   expires_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS shares_user ON shares(user_id);
 """
+# what an alert watches: the price (default), the funding rate (%) or open interest of the symbol, or a market-wide
+# daily series (Fear & Greed Index, influencer pressure)
+MIGRATE_2_3 = "ALTER TABLE alerts ADD COLUMN metric TEXT NOT NULL DEFAULT 'price';"
 
 # drawings whose two points define a sloped line an alert can follow (extended to the right)
 LINE_DRAWINGS = {"segment", "rayLine", "straightLine"}
@@ -42,7 +45,7 @@ def _alert_row(r) -> dict:
     return {"id": r["id"], "symbol": r["symbol"], "cond": r["cond"], "level": r["level"],
             "line": json.loads(r["line"]) if r["line"] else None, "drawing_id": r["drawing_id"], "note": r["note"],
             "active": bool(r["active"]), "created_at": r["created_at"], "fired_at": r["fired_at"],
-            "fired_price": r["fired_price"]}
+            "fired_price": r["fired_price"], "metric": r["metric"]}
 
 
 def drawing_target(name: str, points: list) -> tuple[float | None, list[float] | None]:
@@ -72,7 +75,7 @@ class ExtraMixin:
         return [_alert_row(r) for r in rows]
 
     def create_alert_checked(self, uid: str, symbol: str, cond: str, level: float | None, line: list[float] | None,
-                             drawing_id: str | None, note: str, *, max_active: int, max_total: int) -> dict:
+                             drawing_id: str | None, note: str, *, max_active: int, max_total: int, metric: str = "price") -> dict:
         from .db import LimitError
         with self._tx() as c:
             if c.execute("SELECT COUNT(*) FROM alerts WHERE user_id=? AND active=1", (uid,)).fetchone()[0] >= max_active:
@@ -84,9 +87,9 @@ class ExtraMixin:
                 if c.execute("SELECT COUNT(*) FROM alerts WHERE user_id=?", (uid,)).fetchone()[0] >= max_total:
                     raise LimitError(409, f"too many paused alerts ({max_total} in total): delete some")
             cur = c.execute(
-                "INSERT INTO alerts(user_id, symbol, cond, level, line, drawing_id, note, active, created_at) "
-                "VALUES(?,?,?,?,?,?,?,1,?)",
-                (uid, symbol, cond, level, json.dumps(line) if line else None, drawing_id, note, _now()))
+                "INSERT INTO alerts(user_id, symbol, cond, level, line, drawing_id, note, active, created_at, metric) "
+                "VALUES(?,?,?,?,?,?,?,1,?,?)",
+                (uid, symbol, cond, level, json.dumps(line) if line else None, drawing_id, note, _now(), metric))
             row = c.execute("SELECT * FROM alerts WHERE id=?", (cur.lastrowid,)).fetchone()
         self.alerts_rev += 1
         return _alert_row(row)
@@ -126,9 +129,10 @@ class ExtraMixin:
     def active_alerts(self) -> list[dict]:
         """All armed alerts (for the engine)."""
         with self._lock:
-            rows = self._conn.execute("SELECT id, user_id, symbol, cond, level, line, note, rev FROM alerts WHERE active=1").fetchall()
+            rows = self._conn.execute("SELECT id, user_id, symbol, cond, level, line, note, rev, metric FROM alerts WHERE active=1").fetchall()
         return [{"id": r["id"], "user_id": r["user_id"], "symbol": r["symbol"], "cond": r["cond"], "level": r["level"],
-                 "line": json.loads(r["line"]) if r["line"] else None, "note": r["note"], "rev": r["rev"]} for r in rows]
+                 "line": json.loads(r["line"]) if r["line"] else None, "note": r["note"], "rev": r["rev"], "metric": r["metric"]}
+                for r in rows]
 
     def fire_alerts(self, fired: list[tuple[int, int, float]]) -> set[int]:
         """Switch fired alerts off; (id, rev, price). Only alerts still armed AND unchanged since the engine read them

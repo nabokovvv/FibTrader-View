@@ -2,14 +2,21 @@ import { accessToken, refreshAfterReject, sessionRejected } from '../auth/sessio
 import { getLang, t } from '../i18n'
 import type { BarsResponse, DrawingRecord, Interval, SymbolInfo, Watchlist } from '../lib/types'
 
-/** An API failure: `status` is the HTTP code, `message` is already in the UI language. */
+/** An API failure: `status` is the HTTP code, `message` is already in the UI language. Refusals of older history
+ *  carry a machine-readable `code` ('slow' | 'stopped' | 'login_required'), `retryAfter` (seconds) and `until` (ms). */
 export class ApiError extends Error {
   status: number
   detail: string
-  constructor(status: number, detail: string, message: string) {
+  code: string | null
+  retryAfter: number | null
+  until: number | null
+  constructor(status: number, detail: string, message: string, extra: { code?: string | null; retryAfter?: number | null; until?: number | null } = {}) {
     super(message)
     this.status = status
     this.detail = detail
+    this.code = extra.code ?? null
+    this.retryAfter = extra.retryAfter ?? null
+    this.until = extra.until ?? null
   }
 }
 
@@ -22,6 +29,16 @@ const FRIENDLY: Record<number, string> = {
   503: 'The server is busy. Try again in a moment.',
   507: 'Storage is full. Try again later.',
 }
+const CODE_FRIENDLY: Record<string, string> = {
+  login_required: 'Sign in to see older history.',
+  stopped: 'The history limit is used up for now.',
+  slow: 'Loading older history more slowly…',
+}
+
+/** A shared chart being viewed (/s/<id>): its id goes with bars / derivatives requests, so a guest also gets the
+ *  stretch around the shared moment. */
+let shareAccess: string | null = null
+export const setShareAccess = (id: string | null) => { shareAccess = id }
 
 export async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const send = (token: string | null) => fetch(url, {
@@ -39,11 +56,17 @@ export async function req<T>(url: string, init?: RequestInit): Promise<T> {
   }
   if (!r.ok) {
     let detail = r.statusText
-    try { detail = (await r.json()).detail ?? detail } catch { /* ignore */ }
-    const friendly = FRIENDLY[r.status] ?? (r.status === 404 && /unknown symbol/.test(detail) ? 'Unknown symbol.' : null)
+    let body: { detail?: unknown; code?: unknown; retry_after?: unknown; until?: unknown } = {}
+    try { body = await r.json() } catch { /* ignore */ }
+    if (typeof body.detail === 'string') detail = body.detail
+    const code = typeof body.code === 'string' ? body.code : null
+    const header = Number(r.headers.get('retry-after'))
+    const retryAfter = typeof body.retry_after === 'number' ? body.retry_after : Number.isFinite(header) && header > 0 ? header : null
+    const until = typeof body.until === 'number' ? body.until : null
+    const friendly = (code && CODE_FRIENDLY[code]) ?? FRIENDLY[r.status] ?? (r.status === 404 && /unknown symbol/.test(detail) ? 'Unknown symbol.' : null)
     // English keeps the server's precise wording; other languages get the translated summary
     const message = friendly && getLang() !== 'en' ? t(friendly) : `${r.status}: ${detail}`
-    throw new ApiError(r.status, detail, message)
+    throw new ApiError(r.status, detail, message, { code, retryAfter, until })
   }
   return r.json() as Promise<T>
 }
@@ -69,7 +92,7 @@ export const api = {
     return out
   },
   bars: (id: string, interval: Interval, to?: number | null, limit = 500) =>
-    req<BarsResponse>(`/api/bars?${q({ id, interval, to, limit })}`),
+    req<BarsResponse>(`/api/bars?${q({ id, interval, to, limit, share: shareAccess })}`),
 
   /** All drawings of a symbol; the server pages them (bounded memory per request). */
   drawings: async (symbol: string) => {
@@ -118,7 +141,7 @@ export const api = {
   settings: () => req<Record<string, unknown>>('/api/settings'),
   putSettings: (values: Record<string, unknown>) => req('/api/settings', { method: 'PUT', body: JSON.stringify(values) }),
 
-  alerts: () => req<{ alerts: Alert[]; markets: string[]; telegram: boolean }>('/api/alerts'),
+  alerts: () => req<{ alerts: Alert[]; markets: string[]; telegram: boolean; metrics?: AlertMetric[] }>('/api/alerts'),
   createAlert: (a: AlertIn) => req<{ alert: Alert }>('/api/alerts', { method: 'POST', body: JSON.stringify(a) }).then((r) => r.alert),
   updateAlert: (id: number, patch: Partial<Pick<Alert, 'active' | 'level' | 'cond' | 'note'>>) =>
     req<{ alert: Alert }>(`/api/alerts/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.alert),
@@ -128,7 +151,9 @@ export const api = {
   telegramUnlink: () => req('/api/telegram', { method: 'DELETE' }),
 
   derivs: (kind: 'funding' | 'oi' | 'liq', id: string, interval: Interval, from: number, to: number) =>
-    req<DerivsResponse>(`/api/derivs/${kind}?${q({ id, interval, from, to })}`),
+    req<DerivsResponse>(`/api/derivs/${kind}?${q({ id, interval, from, to, share: shareAccess })}`),
+
+  sentiment: (kind: 'fng' | 'yt') => req<{ points: number[][]; available: boolean }>(`/api/sentiment/${kind}`),
 
   sendFeedback: (kind: 'idea' | 'bug', text: string, context?: Record<string, string>) =>
     req<{ ok: boolean; public: boolean }>('/api/feedback', { method: 'POST', body: JSON.stringify({ kind, text, context }) }),
@@ -139,9 +164,16 @@ export const api = {
 }
 
 export type AlertCond = 'cross' | 'up' | 'down'
+/** What an alert watches: the price, the funding rate (%) or open interest of a perpetual, or a market-wide daily series. */
+export type AlertMetric = 'price' | 'funding' | 'oi' | 'fng' | 'yt'
 export interface Alert {
   id: number; symbol: string; cond: AlertCond; level: number | null; line: [number, number, number, number] | null
   drawing_id: string | null; note: string; active: boolean; created_at: number; fired_at: number | null; fired_price: number | null
+  metric?: AlertMetric
 }
-export interface AlertIn { symbol: string; cond: AlertCond; level?: number; line?: number[]; drawing_id?: string; note?: string }
-export interface DerivsResponse { points: number[][]; covered_from: number; exhausted: boolean; recorded?: boolean; unavailable?: string }
+export interface AlertIn { symbol: string; cond: AlertCond; metric?: AlertMetric; level?: number; line?: number[]; drawing_id?: string; note?: string }
+export interface DerivsResponse {
+  points: number[][]; covered_from: number; exhausted: boolean; recorded?: boolean; unavailable?: string
+  /** cut at the edge of what this request may see: older points exist (sign in / the daily history limit) */
+  locked?: 'login' | 'stopped'; until?: number
+}

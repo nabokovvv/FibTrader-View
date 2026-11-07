@@ -78,12 +78,23 @@ class CandleService:
             self._persist_archive_ok = free >= min(self.min_free_disk, 1024**3)
         return self._persist_archive_ok if archive else self._persist_ok
 
-    def store_for(self, provider: Provider, native: str):
-        """Intervals a provider archives (Hyperliquid 1h / 4h / 1D) live in '<market>-archive.sqlite': the cache
-        cleanup never touches that file, because those bars cannot be fetched again once they leave the window."""
+    @staticmethod
+    def archive_kind(provider: Provider, native: str, symbol: str | None = None) -> str | None:
+        """Which archive keeps this series for good: "archive" (1h / 4h / 1D, in the nightly backup),
+        "minutes-archive" (1m … 30m: big, so not backed up) or None (the cache, which the cleanup trims)."""
         if native in getattr(provider, "archive_intervals", ()):
-            return self.stores.get(f"{provider.market}-archive")
-        return self.stores.get(provider.market)
+            return "archive"
+        if native in getattr(provider, "minute_archive_intervals", ()):
+            keep = getattr(provider, "archives_minutes", None)
+            if symbol is None or keep is None or keep(symbol):
+                return "minutes-archive"
+        return None
+
+    def store_for(self, provider: Provider, native: str, symbol: str | None = None):
+        """Archived series live in '<market>-archive.sqlite' / '<market>-minutes-archive.sqlite': the cache cleanup
+        never touches those files, because their bars cannot be fetched again once they leave the provider's window."""
+        kind = self.archive_kind(provider, native, symbol)
+        return self.stores.get(f"{provider.market}-{kind}" if kind else provider.market)
 
     def native_for(self, provider: Provider, interval: str) -> str:
         if interval in provider.native_intervals:
@@ -110,7 +121,7 @@ class CandleService:
         self._touched[key] = now
         while len(self._touched) > 20_000:
             self._touched.popitem(last=False)
-        await asyncio.to_thread(self.store_for(provider, native).touch, symbol, native)
+        await asyncio.to_thread(self.store_for(provider, native, symbol).touch, symbol, native)
 
     async def _get_bars(self, sym: SymbolInfo, interval: str, to_ms: int | None, limit: int) -> BarsPage:
         provider = self.providers[sym.market]
@@ -119,7 +130,7 @@ class CandleService:
         now = now_ms()
         end = now if to_ms is None else min(to_ms - 1, now)
         span = self._span_for(sym, interval, native, limit)
-        store = self.store_for(provider, native)
+        store = self.store_for(provider, native, sym.symbol)
 
         # Widen the window until we have `limit` bars or the provider's history is exhausted
         # (weekends, holidays and thin instruments leave long stretches without bars).
@@ -196,8 +207,8 @@ class CandleService:
 
     async def _ensure(self, provider: Provider, symbol: str, native: str, start: int, end: int) -> list[Bar]:
         """Make sure closed bars for [start, end] are stored. Returns unclosed (live) bars fetched on the way."""
-        store = self.store_for(provider, native)
-        archive = native in getattr(provider, "archive_intervals", ())
+        store = self.store_for(provider, native, symbol)
+        archive = self.archive_kind(provider, native, symbol) is not None
         now = now_ms()
         boundary = bucket_start(now, native)         # bars with ts >= boundary are not closed yet
         lag = getattr(provider, "persist_lag_ms", 0)  # e.g. Alpaca: don't persist bars younger than the SIP lag

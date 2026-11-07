@@ -34,6 +34,11 @@ export interface BarsResponse {
   native: Interval
   more: boolean
   bars: Bar[]
+  /** the page was cut at the edge of what this request may see (sign in / the daily history limit) */
+  locked?: 'login' | 'stopped'
+  until?: number
+  /** with `locked`: the oldest bar this request could get */
+  floor?: number
 }
 
 export interface Quote {
@@ -83,4 +88,5 @@ export const MARKET_LABEL: Record<string, string> = {
   moex: 'MOEX',
   yahoo: 'Global',
   hl: 'Hyperliquid',
+  bq: 'CFD',
 }

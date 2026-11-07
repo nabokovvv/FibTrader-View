@@ -1,6 +1,6 @@
 import type { Chart, IndicatorTemplate } from 'klinecharts'
 import type { ComponentType, RefObject } from 'react'
-import type { IndicatorMeta } from '../chart/indicators'
+import type { IndicatorMeta } from '../chart/indicators/catalog'
 import type { IndicatorState, SymbolInfo } from '../lib/types'
 
 /**

@@ -1,4 +1,6 @@
-"""Hyperliquid candle archive: keeps 1h, 4h and 1D bars of every live Hyperliquid market for good.
+"""Hyperliquid candle archive: keeps 1h, 4h and 1D bars of every live Hyperliquid market for good, and 1m … 30m
+of the HIP-3 markets (stocks, indices, commodities, FX; ~8 GB a year) in ``hl-minutes-archive.sqlite``, which the
+nightly backup skips (crypto minutes have their full history on Bybit).
 
 Hyperliquid serves only the newest 5000 bars of an interval (1h ≈ 208 days, 4h ≈ 2.3 years), so history older than
 that exists only if somebody stored it in time. Every 6 hours this job walks all live markets (stocks, indices and
@@ -59,7 +61,7 @@ class HLArchiver:
         await self.provider.symbols()
         stats = {"series": 0, "bars": 0, "skipped": 0, "failed": 0}
         for coin in self.provider.archive_coins():
-            for iv in sorted(self.provider.archive_intervals, key=lambda k: -INTERVALS[k].ms):
+            for iv in self.provider.archived(coin):
                 try:
                     n = await self.update(coin, iv)
                 except asyncio.CancelledError:
@@ -78,7 +80,7 @@ class HLArchiver:
     async def update(self, coin: str, iv: str, now: int | None = None) -> int | None:
         """Bars stored for one series, or None when it was fresh already."""
         candles, p = self.candles, self.provider
-        store = candles.store_for(p, iv)
+        store = candles.store_for(p, iv, coin)
         ivms = INTERVALS[iv].ms
         now = now or int(time.time() * 1000)
         boundary = bucket_start(now, iv)               # bars at or after this are still forming

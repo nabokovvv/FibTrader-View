@@ -50,10 +50,13 @@ export function Toggle({ checked, onChange, label }: { checked: boolean; onChang
  * Everything else, USDC perpetuals included, keeps the quiet style.
  */
 export function MarketBadge({ market, currency, highlight }: { market: string; currency?: string; highlight?: boolean }) {
-  const label: Record<string, string> = { bybit: 'PERP', 'bybit-spot': 'SPOT', us: 'US', moex: 'MOEX', yahoo: 'GLB', hl: 'HL' }
+  const label: Record<string, string> = { bybit: 'PERP', 'bybit-spot': 'SPOT', us: 'US', moex: 'MOEX', yahoo: 'GLB', hl: 'HL', bq: 'CFD' }
   const quiet = 'shrink-0 rounded border border-line px-1.5 py-px text-[10px] font-medium tracking-wide text-muted'
   if (market === 'hl') {
     return <span className={quiet} title={t('Perpetual on Hyperliquid: trades around the clock, so its price can differ from the exchange price of the underlying.')}>HL</span>
+  }
+  if (market === 'bq') {
+    return <span className={quiet} title={t('CFD price of a broker, data by biquote.io: it follows the market during its trading hours.')}>CFD</span>
   }
   if (market === 'bybit' && currency === 'USDC') {
     return <span className={quiet} title={t('USDC-margined perpetual')}>USDC</span>

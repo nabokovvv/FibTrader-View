@@ -126,7 +126,6 @@ export default function App() {
       )}
 
       {sheet === 'search' && <SymbolSearch mode={addMode ? 'add' : 'open'} onClose={() => { setSheet(null); setAddMode(false) }} />}
-      {sheet === 'compare' && <SymbolSearch mode="compare" onClose={() => setSheet(null)} />}
       {sheet === 'alerts' && <AlertsModal onClose={() => { setSheet(null); useAlerts.getState().setDraft(null) }} />}
       {sheet === 'share' && <ShareModal onClose={() => setSheet(null)} />}
       {sheet === 'donate' && <DonateModal onClose={() => setSheet(null)} />}

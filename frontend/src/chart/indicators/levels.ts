@@ -9,6 +9,7 @@ import { hexAlpha } from '../theme'
  * levels are kept inside the pane's scale (minValue / maxValue).
  * ---------------------------------------------------------------------------------------------------------- */
 export const RSI_COLOR = '#7e57c2'
+export const MFI_COLOR = '#d97706'
 
 interface Spec {
   bands?: [number, number]   // indexes of the upper and lower band in calcParams
@@ -22,8 +23,13 @@ interface Spec {
 const SPECS: Record<string, Spec> = {
   RSI: { bands: [1, 2], mid: 50, fillKey: 'rsi', tint: RSI_COLOR },
   WR: { bands: [1, 2], mid: -50, fillKey: 'wr' },
+  FNG: { bands: [0, 1], mid: 50, fillKey: 'fng' },
+  YTS: { zero: true },
   CCI: { bands: [1, 2], mid: 0, fillKey: 'cci' },
   STOCH: { bands: [3, 4] },
+  STOCHRSI: { bands: [4, 5] },
+  MFI: { bands: [1, 2], mid: 50, fillKey: 'mfi', tint: MFI_COLOR },
+  CMF: { zero: true },
   KDJ: { bands: [3, 4] },
   DMI: { level: 2 },
   MACD: { zero: true },

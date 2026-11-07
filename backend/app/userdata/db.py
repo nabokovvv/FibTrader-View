@@ -4,6 +4,7 @@ On the private instance there is a single user, ``local``; on the public one the
 Schema version lives in ``PRAGMA user_version``:
   0 → 1  every table gets ``user_id`` (existing rows become ``local``); keys include the user id.
   1 → 2  alerts, Telegram links, feedback, shared charts (see extra.py).
+  2 → 3  alerts get ``metric`` (price, funding, open interest, Fear & Greed, influencer pressure).
 """
 from __future__ import annotations
 
@@ -15,9 +16,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from .extra import SCHEMA_V2, ExtraMixin
+from .extra import MIGRATE_2_3, SCHEMA_V2, ExtraMixin
 
-VERSION = 2
+VERSION = 3
 
 SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS drawings(
@@ -97,9 +98,11 @@ class UserDB(ExtraMixin):
             return
         if version == 0:
             has_v0 = self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='drawings'").fetchone()
-            steps = (MIGRATE_0_1 if has_v0 else SCHEMA_V1) + SCHEMA_V2
+            steps = (MIGRATE_0_1 if has_v0 else SCHEMA_V1) + SCHEMA_V2 + MIGRATE_2_3
+        elif version == 1:
+            steps = SCHEMA_V2 + MIGRATE_2_3
         else:
-            steps = SCHEMA_V2
+            steps = MIGRATE_2_3
         # one script = one transaction (executescript would commit a transaction opened outside of it)
         script = "BEGIN;" + steps + f"PRAGMA user_version={VERSION}; COMMIT;"
         try:

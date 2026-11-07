@@ -111,13 +111,26 @@ async def _verify(token: str) -> str:
 
 async def user_id(request: Request) -> str:
     """FastAPI dependency: the id that owns drawings, watchlists, layouts and settings."""
+    uid = await optional_user_id(request)
+    if uid is None:
+        raise HTTPException(401, "sign in required")
+    return uid
+
+
+async def optional_user_id(request: Request) -> str | None:
+    """The signed-in user, or None without a session (public endpoints that give guests less). A token that is
+    sent but not valid is still a 401: the client refreshes it instead of being treated as a guest."""
     if config.AUTH != "supabase":
         return LOCAL_USER
-    ip = request.scope.get("state", {}).get("client_ip", "unknown")
     header = request.headers.get("authorization", "")
     scheme, _, token = header.partition(" ")
     if scheme.lower() != "bearer" or not token:
-        raise HTTPException(401, "sign in required")
+        return None
+    return await _check(request, token)
+
+
+async def _check(request: Request, token: str) -> str:
+    ip = request.scope.get("state", {}).get("client_ip", "unknown")
     if len(token) > MAX_TOKEN:
         raise HTTPException(401, "invalid session")
     if not _fail_limiter().has(ip):  # out of failed attempts: do not even verify

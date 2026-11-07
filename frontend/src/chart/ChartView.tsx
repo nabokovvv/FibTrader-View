@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { cancelPendingSave } from './pendingSave'
 import { dispose, init, type Chart, type IndicatorCreate, type IndicatorTooltipData, type KLineData, type Overlay, type OverlayCreate } from 'klinecharts'
 import { ApiError, api } from '../api/client'
+import { HistoryLocked, Stale, historyClosed, historyFetch, setHistoryLock, untilText } from '../api/history'
+import { HistoryNotice } from '../components/HistoryNotice'
 import { getLang, t } from '../i18n'
 import { ws } from '../api/ws'
 import type { Bar, DrawingRecord, Interval, SymbolInfo } from '../lib/types'
@@ -9,7 +11,7 @@ import { toolStyle, useStore } from '../state/store'
 import { INTERVAL_MS, PERIOD, intervalOf } from './periods'
 import { haList, haLive, isHeikinAshi } from './heikinAshi'
 import { ALERT_FEATURE_ID, INDICATOR_VISIBILITY_ID, buildStyles, indicatorEye } from './theme'
-import { alertMarkets, openAlertAt, useAlerts } from '../state/alerts'
+import { INDICATOR_METRIC, alertMarkets, openAlertAt, useAlerts } from '../state/alerts'
 import { ALERT_LINES, ALERT_LINES_ID, type AlertLevel } from './indicators/alertLines'
 import { levelProps, overrideLevels, padParams } from './indicators/levels'
 import { replaceIndicatorExtend } from './extend'
@@ -19,9 +21,8 @@ import { registerCustomOverlays } from './overlays'
 import { fibDefaults } from './overlays/fib'
 import { POSITION_TOOLS, completePosition, positionDefaults } from './overlays/position'
 import { INDICATOR_CATALOG, registerCustomIndicators } from './indicators'
-import { compareCreate, useCompareRebase } from './indicators/compare'
 import { live } from './live'
-import { replayActive, replayAttach, replayCut, replayDetach, replayTo, useReplay } from './replay'
+import { replayActive, replayAttach, replayCut, replayDetach, replayExit, replayTo, useReplay } from './replay'
 import { PLUGIN_HOOKS, pluginIndicator } from '../plugins'
 
 registerCustomOverlays()
@@ -102,12 +103,31 @@ export function ChartView() {
     chartHolder.restoreRemove = () => { suppressRemove.current = false }
     chartHolder.undo = () => undo(chart)
 
-    // bell next to the crosshair price label (mouse hover, or a tap on a phone): alert at that price
+    // bell next to the crosshair price label (mouse hover, or a tap on a phone): alert at that price; on the panel of
+    // an indicator that can carry an alert (funding, OI, Fear & Greed, influencer pressure) the same bell sets an
+    // alert on that indicator at the value under the cursor (the panel bell needs the KLineChart patch, see
+    // scripts/patch-klinecharts.mjs)
+    const paneMetric = (paneId: string) => {
+      const sym = symbolRef.current
+      for (const ind of chart.getIndicators({ paneId })) {
+        const m = INDICATOR_METRIC[ind.name]
+        if (m && ((m === 'fng' || m === 'yt') ? sym?.type === 'crypto' : sym?.market === 'bybit' || sym?.market === 'hl')) return m
+      }
+      return null
+    }
+    ;(globalThis as { __lvCrosshairFeaturePane?: (paneId: string) => boolean }).__lvCrosshairFeaturePane = (paneId) => paneMetric(paneId) !== null
     chart.subscribeAction('onCrosshairFeatureClick', (data) => {
       const d = data as { crosshair?: { y?: number; paneId?: string }; feature?: { id?: string } } | undefined
       if (d?.feature?.id !== ALERT_FEATURE_ID || d.crosshair?.y == null) return
-      const price = priceAt(chart, d.crosshair.paneId ?? 'candle_pane', d.crosshair.y)
-      if (price != null) openAlertAt(price)
+      const paneId = d.crosshair.paneId ?? 'candle_pane'
+      if (paneId === 'candle_pane') {
+        const price = priceAt(chart, paneId, d.crosshair.y)
+        if (price != null) openAlertAt(price)
+        return
+      }
+      const metric = paneMetric(paneId)
+      const v = (chart.convertFromPixel([{ y: d.crosshair.y }], { paneId }) as Array<{ value?: number }>)[0]?.value
+      if (metric && v != null && Number.isFinite(v)) openAlertAt(v, metric)
     })
 
     chart.subscribeAction('onIndicatorTooltipFeatureClick', (data) => {
@@ -125,29 +145,51 @@ export function ChartView() {
         // 'backward' = newer bars (the live feed brings those); 'forward' without a first bar has no anchor (an
         // empty chart): asking for the newest page there would show the present in the middle of a replay
         if (!id || type === 'backward' || (type === 'forward' && !timestamp)) { callback([], { forward: false, backward: false }); return }
-        if (type === 'init') setLoading(true)
+        // older history closed for now (sign in / history limit): "more later", without asking the server again
+        if (type === 'forward' && historyClosed()) { callback([], { forward: true, backward: false }); return }
+        if (type === 'init') { setLoading(true); setHistoryLock(null) }
         // KLineChart does not drop answers for a symbol/period it already left (or a load a replay start / exit
         // replaced): ignore them ourselves
         const seq = type === 'init' ? ++initSeq.current : initSeq.current
-        const stale = () => symbolRef.current?.id !== id || intervalOf(chartRef.current?.getPeriod() ?? period) !== iv || initSeq.current !== seq
+        const stale = () => !chartRef.current || symbolRef.current?.id !== id || intervalOf(chartRef.current.getPeriod() ?? period) !== iv || initSeq.current !== seq
         // bar replay: the first page ends at the replay's "now" instead of the present
         const replayTo_ = type === 'init' ? replayTo() : null
         try {
           const to = replayTo_ ?? (type === 'forward' ? timestamp : null)
-          const res = await withRetry(() => api.bars(id, iv, to, type === 'init' ? 600 : 500), stale)
+          // older history may be paced or closed (api/history.ts): waits / HistoryLocked instead of an error
+          const res = await historyFetch(() => api.bars(id, iv, to, type === 'init' ? 600 : 500), stale)
           if (stale()) return
           if (type === 'init') setLoading(false)
           const bars = replayTo_ !== null ? replayCut(id, iv, res.bars) : res.bars
           const list = bars.map(toKLine)
-          callback(isHeikinAshi(useStore.getState().chartType) ? haList(list) : list, { forward: res.more, backward: false })
+          // a page cut at the edge of what this account may see now: more exists (asked for again once it opens)
+          callback(isHeikinAshi(useStore.getState().chartType) ? haList(list) : list, { forward: res.more || !!res.locked, backward: false })
           if (type === 'init') {
             const last = bars.at(-1)
             if (last) useStore.getState().setLastBar({ ts: last[0], open: last[1], close: last[4] })
           }
         } catch (e) {
-          if (stale()) return
+          if (e instanceof Stale || stale()) return
           if (type === 'init') setLoading(false)
+          if (e instanceof HistoryLocked) {
+            // older history is closed for now (HistoryNotice says why): not the end, the loader waits for it to open
+            callback([], { forward: type === 'forward', backward: false })
+            if (replayTo_ !== null) {
+              // a bar replay that starts in closed history cannot run: back to the live chart
+              replayExit()
+              useStore.setState({ notice: e.lock.kind === 'login'
+                ? t('Bar replay this far back needs signing in.')
+                : t('Bar replay this far back opens again at {time}: the history limit is used up.', { time: untilText(e.lock.until) }) })
+            }
+            return
+          }
           const temporary = e instanceof ApiError && [429, 503].includes(e.status)
+          if (type === 'forward') {
+            // a failed older page is not the end of the history: the next scroll to the edge asks again
+            if (!temporary) useStore.setState({ error: (e as Error).message })
+            callback([], { forward: true, backward: false })
+            return
+          }
           useStore.setState({ error: temporary ? t('The server is busy. Retrying…') : (e as Error).message })
           callback([], { forward: false, backward: false })
           // a busy server is not the end of the history: reload this chart once things calm down
@@ -344,7 +386,7 @@ export function ChartView() {
     const chart = chartRef.current
     if (!chart) return
     const levels: AlertLevel[] = symbol
-      ? alerts.filter((a) => a.active && a.symbol === symbol.id && a.level != null && !a.line && !a.drawing_id)
+      ? alerts.filter((a) => a.active && a.symbol === symbol.id && (a.metric ?? 'price') === 'price' && a.level != null && !a.line && !a.drawing_id)
         .map((a) => ({ price: a.level as number, cond: a.cond }))
       : []
     const has = chart.getIndicators({ id: ALERT_LINES_ID }).length > 0
@@ -382,7 +424,6 @@ export function ChartView() {
         if (ind.main) create.paneId = 'candle_pane'
         const plugin = pluginIndicator(ind.name)
         if (plugin?.initialExtend) create.extendData = plugin.initialExtend(ind)
-        if (ind.name === 'CMP') Object.assign(create, compareCreate(ind, list))
         const paneId = chart.createIndicator(create, ind.main)
         if (ind.main) {
           const runtime = chart.getIndicators({ id: ind.key })[0]
@@ -421,7 +462,6 @@ export function ChartView() {
   // ----------------------------------------------------------------- plugins
   // PLUGIN_HOOKS is fixed at build time, so the hook order never changes between renders.
   for (const usePluginChart of PLUGIN_HOOKS) usePluginChart(chartRef, indicators, symbol)
-  useCompareRebase(chartRef, indicators)
 
   // ---------------------------------------------------------------- drawing
   useEffect(() => {
@@ -563,6 +603,15 @@ export function ChartView() {
   return (
     <div className="relative h-full w-full" onContextMenu={onContextMenu}>
       <div ref={ref} className="h-full w-full" />
+      <HistoryNotice />
+      {symbol?.market === 'bq' && (
+        // biquote's terms ask for credit: always visible on its charts, never in the way of the plot
+        <a href="https://biquote.io" target="_blank" rel="noopener noreferrer"
+          className="absolute bottom-7 left-2 z-10 rounded px-1 text-[10px] leading-4 text-faint hover:text-muted"
+          style={{ background: 'color-mix(in srgb, var(--bg) 70%, transparent)' }}>
+          {t('Data: biquote.io')}
+        </a>
+      )}
       {menu && (
         <div ref={menuRef} className="absolute z-40 min-w-[220px] rounded-lg border border-line bg-panel p-1 shadow-xl" style={{ left: menu.x, top: menu.y }}>
           <button className="tb-btn w-full !h-9 !justify-start text-[13px]" onClick={() => { openAlertAt(menu.price); setMenu(null) }}>

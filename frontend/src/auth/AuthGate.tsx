@@ -21,7 +21,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     let alive = true
     let shown: string | null | undefined  // id of the account whose app is on screen
     const off = onUserChange((u) => {
-      if (!alive) return
+      if (!alive || shareId) return   // a shared chart stays on screen whoever signs in or out
       if (shown !== undefined) { window.location.reload(); return }
       setPhase(u ? { kind: 'in', user: u } : { kind: 'out' })
       if (u) shown = u.id
@@ -29,7 +29,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
     loadConfig()
       .then(async (cfg) => {
         initLang(!!cfg.i18n)
-        if (shareId) { if (alive) setPhase({ kind: 'share' }); return }
+        if (shareId) {
+          // open to everyone; a saved session still counts (older history of the chart is for signed-in people)
+          try { await initAuth(cfg) } catch { /* the chart works without it */ }
+          if (alive) setPhase({ kind: 'share' })
+          return
+        }
         if (cfg.auth === 'none') { if (alive) setPhase({ kind: 'in', user: null }); return }
         const u = await initAuth(cfg)
         if (!alive) return

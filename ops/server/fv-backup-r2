@@ -3,6 +3,7 @@
 #   latest/app.sqlite.zst          user data (drawings, watchlists, layouts, alerts, shared links)
 #   latest/derivs.sqlite.zst       recorded liquidations and Hyperliquid open interest
 #   latest/hl-archive.sqlite.zst   Hyperliquid 1h / 4h / 1D bars older than the API's 5000-bar window
+#   latest/bq-archive.sqlite.zst   biquote 5m … 1D bars (the API serves only a short window of the newest ones)
 # A snapshot (sqlite3 .backup) replaces the copy in R2 only if it passes PRAGMA quick_check AND did not shrink:
 # next to each copy R2 keeps <name>.metric — counts that only grow in normal use (archived bars, recorded OI hours,
 # liquidation rows, users); several counts are compared one by one, so growth in one cannot hide a loss in another.
@@ -28,7 +29,7 @@ metric() {
     app) sqlite3 "$2" "SELECT COUNT(DISTINCT user_id) FROM watchlists;" ;;
     derivs) sqlite3 "$2" "SELECT (SELECT COUNT(*) FROM (SELECT DISTINCT symbol, ts / 3600000 FROM hl_oi)) || ' ' ||
       (SELECT COUNT(*) FROM liq) || ' ' || (SELECT COUNT(*) FROM liq_hist);" ;;
-    hl-archive) sqlite3 "$2" "SELECT COUNT(*) FROM bars;" ;;
+    hl-archive|bq-archive) sqlite3 "$2" "SELECT COUNT(*) FROM bars;" ;;
   esac
 }
 # 0 when every count in $2 is >= the one at the same place in $1 (a missing old count is 0: older metric files)
@@ -36,7 +37,8 @@ grown() { local -a a=($1) b=($2); local i; for i in "${!a[@]}"; do [ "${b[$i]:-0
 
 tmp=$(mktemp -d /var/tmp/fv-backup.XXXXXX); trap 'rm -rf "$tmp"' EXIT
 sent=(); kept=()
-for spec in "app:$DATA/app.sqlite" "derivs:$DATA/candles/derivs.sqlite" "hl-archive:$DATA/candles/hl-archive.sqlite"; do
+for spec in "app:$DATA/app.sqlite" "derivs:$DATA/candles/derivs.sqlite" "hl-archive:$DATA/candles/hl-archive.sqlite" \
+    "bq-archive:$DATA/candles/bq-archive.sqlite"; do
   name=${spec%%:*}; src=${spec#*:}
   [ -f "$src" ] || continue
   snap="$tmp/$name.sqlite"

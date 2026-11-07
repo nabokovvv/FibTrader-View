@@ -80,11 +80,14 @@ class Profile:
     shares: int                # shared chart links per account
     share_bytes: int
     derivs_pages: int          # Bybit pages one funding / OI request may fetch
+    # older history (history.py)
+    bars_page: int = 2000      # most bars one /api/bars answer may hold
+    history_quota: bool = False  # guests: the fresh window only; accounts: wallet, pace, daily stop
 
 
 PUBLIC = Profile(
     body_bytes=512 * 1024, body_deadline_s=10, uploads_per_ip=4, uploads_global=16, ws_handshake_rate=0.2,
-    ws_handshake_burst=4, upstream_cmd_rate=20, upstream_cmd_burst=64, api_rate=15, api_burst=60, bars_rate=2, bars_burst=20, bars_per_ip=2, bars_global=4,
+    ws_handshake_burst=4, upstream_cmd_rate=20, upstream_cmd_burst=64, api_rate=15, api_burst=60, bars_rate=2, bars_burst=20, bars_per_ip=3, bars_global=4,
     bars_wait_s=15, auth_fail_per_min=30,
     backfill_bars=3000, bybit_rps=5, bybit_burst=10, bybit_concurrency=2,
     candle_cache_bytes=8 * 1024**3, min_free_disk=5 * 1024**3,
@@ -96,6 +99,7 @@ PUBLIC = Profile(
     layouts=10, layout_bytes=256 * 1024, settings_keys=64, settings_bytes=64 * 1024, user_bytes=10 * 1024**2,
     app_db_bytes=1024**3,
     alerts_active=50, alerts_total=150, feedback_per_day=5, shares=50, share_bytes=128 * 1024, derivs_pages=4,
+    bars_page=1000, history_quota=True,
 )
 PRIVATE = Profile(
     body_bytes=4 * 1024**2, body_deadline_s=60, uploads_per_ip=64, uploads_global=128, ws_handshake_rate=50,
